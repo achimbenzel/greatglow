@@ -62,7 +62,6 @@ PF_Err ProbeThreadCount(void* refcon, A_long thread_index, A_long index, A_long 
 
 struct DispatchContext {
     const TaskRunner::Body* body = nullptr;
-    bool failed = false;
 };
 
 }  // namespace
@@ -85,7 +84,7 @@ PF_Err AeTaskRunner::Dispatch(void* refcon, A_long thread_index, A_long index, A
     try {
         (*context->body)(static_cast<int>(index), static_cast<int>(thread_index));
     } catch (...) {
-        context->failed = true;
+        return PF_Err_INTERNAL_STRUCT_DAMAGED;
     }
     return PF_Err_NONE;
 }

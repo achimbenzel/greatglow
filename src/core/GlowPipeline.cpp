@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <vector>
 
 #include "Blur.h"
 #include "Color.h"
@@ -56,18 +58,57 @@ template <PixelDepth kDepth>
 void ExtractRows(const HostImage& source, int offset_x, int offset_y, int scale, const Threshold& threshold,
                  const TransferFunction& transfer, ImageF& level0, int y_begin, int y_end) {
     const float inv_samples = 1.0f / static_cast<float>(scale * scale);
+    // Destination columns whose source samples are inside the source image.
+    const int lx_begin = std::max(0, (-offset_x + scale - 1) / scale);
+    const int lx_end = std::min(level0.width, (source.width - offset_x) / scale);
+
     for (int ly = y_begin; ly < y_end; ++ly) {
         PixelF* out = level0.Row(ly);
-        for (int lx = 0; lx < level0.width; ++lx) {
+        const int block_y = ly * scale + offset_y;
+        const bool rows_inside = block_y >= 0 && block_y + scale <= source.height;
+
+        for (int lx = 0; lx < lx_begin && lx < level0.width; ++lx) out[lx] = PixelF{0.0f, 0.0f, 0.0f, 0.0f};
+        for (int lx = lx_end > 0 ? lx_end : 0; lx < level0.width; ++lx) out[lx] = PixelF{0.0f, 0.0f, 0.0f, 0.0f};
+
+        if (!rows_inside) {
+            // Partially covered block: fall back to per-sample clamping.
+            for (int lx = lx_begin; lx < lx_end; ++lx) {
+                PixelF sum{0.0f, 0.0f, 0.0f, 0.0f};
+                for (int sy = 0; sy < scale; ++sy) {
+                    const int src_y = block_y + sy;
+                    if (src_y < 0 || src_y >= source.height) continue;
+                    const void* row = source.ConstRow(src_y);
+                    for (int sx = 0; sx < scale; ++sx) {
+                        const PixelF raw = ReadRowPixel<kDepth>(row, lx * scale + sx + offset_x);
+                        const PixelF highlight =
+                            ExtractHighlight(LinearizePremultiplied(raw, transfer), threshold);
+                        sum.a += highlight.a;
+                        sum.r += highlight.r;
+                        sum.g += highlight.g;
+                        sum.b += highlight.b;
+                    }
+                }
+                out[lx] = PixelF{sum.a * inv_samples, sum.r * inv_samples, sum.g * inv_samples,
+                                 sum.b * inv_samples};
+            }
+            continue;
+        }
+
+        if (scale == 1) {
+            const void* row = source.ConstRow(block_y);
+            for (int lx = lx_begin; lx < lx_end; ++lx) {
+                const PixelF raw = ReadRowPixel<kDepth>(row, lx + offset_x);
+                out[lx] = ExtractHighlight(LinearizePremultiplied(raw, transfer), threshold);
+            }
+            continue;
+        }
+
+        for (int lx = lx_begin; lx < lx_end; ++lx) {
             PixelF sum{0.0f, 0.0f, 0.0f, 0.0f};
             for (int sy = 0; sy < scale; ++sy) {
-                const int src_y = ly * scale + sy + offset_y;
-                if (src_y < 0 || src_y >= source.height) continue;
-                const void* row = source.ConstRow(src_y);
+                const void* row = source.ConstRow(block_y + sy);
                 for (int sx = 0; sx < scale; ++sx) {
-                    const int src_x = lx * scale + sx + offset_x;
-                    if (src_x < 0 || src_x >= source.width) continue;
-                    const PixelF raw = ReadRowPixel<kDepth>(row, src_x);
+                    const PixelF raw = ReadRowPixel<kDepth>(row, lx * scale + sx + offset_x);
                     const PixelF highlight = ExtractHighlight(LinearizePremultiplied(raw, transfer), threshold);
                     sum.a += highlight.a;
                     sum.r += highlight.r;
@@ -115,20 +156,62 @@ inline float DitherOffset(int x, int y) {
     return r1 + r2 - 1.0f;
 }
 
+// Upsampling taps for one axis. Precomputing them keeps clamping and weight
+// math out of the composite's inner loop.
+struct AxisTaps {
+    int index[4] = {};
+    float weight[4] = {};
+};
+
+AxisTaps MakeTaps(float coordinate, int limit, bool smooth) {
+    AxisTaps taps;
+    const int base = static_cast<int>(std::floor(coordinate));
+    const float f = coordinate - static_cast<float>(base);
+    auto clamp_index = [limit](int i) { return i < 0 ? 0 : (i >= limit ? limit - 1 : i); };
+    if (!smooth) {
+        taps.index[0] = clamp_index(base);
+        taps.index[1] = clamp_index(base + 1);
+        taps.weight[0] = 1.0f - f;
+        taps.weight[1] = f;
+        return taps;
+    }
+    const float f2 = f * f;
+    const float f3 = f2 * f;
+    taps.weight[0] = (1.0f - 3.0f * f + 3.0f * f2 - f3) / 6.0f;
+    taps.weight[1] = (4.0f - 6.0f * f2 + 3.0f * f3) / 6.0f;
+    taps.weight[2] = (1.0f + 3.0f * f + 3.0f * f2 - 3.0f * f3) / 6.0f;
+    taps.weight[3] = f3 / 6.0f;
+    for (int i = 0; i < 4; ++i) taps.index[i] = clamp_index(base - 1 + i);
+    return taps;
+}
+
 struct CompositeContext {
     CompositeMode mode = CompositeMode::kAdd;
     const TransferFunction* transfer = nullptr;
     bool dither = false;
     bool smooth_upsample = false;
     int scale = 1;
+    int taps = 2;
+    // Horizontal taps per destination column; identical for every row.
+    const AxisTaps* columns = nullptr;
 };
 
-inline PixelF SampleGlow(const ImageF& glow, const CompositeContext& ctx, int x, int y) {
-    if (ctx.scale == 1) return glow.At(x, y);
-    const float inv = 1.0f / static_cast<float>(ctx.scale);
-    const float u = (static_cast<float>(x) + 0.5f) * inv - 0.5f;
-    const float v = (static_cast<float>(y) + 0.5f) * inv - 0.5f;
-    return ctx.smooth_upsample ? SampleBSpline(glow, u, v) : SampleBilinear(glow, u, v);
+inline PixelF SampleGlow(const ImageF& glow, const CompositeContext& ctx, const AxisTaps& rows, int x) {
+    const AxisTaps& cols = ctx.columns[x];
+    PixelF acc{0.0f, 0.0f, 0.0f, 0.0f};
+    for (int j = 0; j < ctx.taps; ++j) {
+        const PixelF* row = glow.Row(rows.index[j]);
+        const float wy = rows.weight[j];
+        for (int i = 0; i < ctx.taps; ++i) {
+            const PixelF& p = row[cols.index[i]];
+            const float w = wy * cols.weight[i];
+            acc.a += p.a * w;
+            acc.r += p.r * w;
+            acc.g += p.g * w;
+            acc.b += p.b * w;
+        }
+    }
+    return acc;
 }
 
 inline float Quantize(float value, float max_value, float dither) {
@@ -215,19 +298,26 @@ template <PixelDepth kSrcDepth, PixelDepth kDstDepth>
 void CompositeRows(const HostImage& source, int offset_x, int offset_y, const ImageF& glow,
                    const CompositeContext& ctx, const HostImage& dest, int y_begin, int y_end) {
     const TransferFunction& transfer = *ctx.transfer;
-    const bool has_source = !source.Empty();
+    const bool has_source = !source.Empty() && ctx.mode != CompositeMode::kGlowOnly;
+    const float inv_scale = 1.0f / static_cast<float>(ctx.scale);
 
     for (int y = y_begin; y < y_end; ++y) {
         const int src_y = y + offset_y;
         const bool src_row_valid = has_source && src_y >= 0 && src_y < source.height;
         const void* src_row = src_row_valid ? source.ConstRow(src_y) : nullptr;
         void* dst_row = dest.Row(y);
+        const AxisTaps row_taps =
+            ctx.scale == 1 ? AxisTaps()
+                           : MakeTaps((static_cast<float>(y) + 0.5f) * inv_scale - 0.5f, glow.height,
+                                      ctx.smooth_upsample);
+        const int src_x_begin = src_row_valid ? std::max(0, -offset_x) : dest.width;
+        const int src_x_end = src_row_valid ? std::min(dest.width, source.width - offset_x) : dest.width;
 
         for (int x = 0; x < dest.width; ++x) {
             const int src_x = x + offset_x;
-            const bool src_valid = src_row_valid && src_x >= 0 && src_x < source.width;
+            const bool src_valid = x >= src_x_begin && x < src_x_end;
 
-            const PixelF glow_pixel = SampleGlow(glow, ctx, x, y);
+            const PixelF glow_pixel = ctx.scale == 1 ? glow.At(x, y) : SampleGlow(glow, ctx, row_taps, x);
 
             if constexpr (kSrcDepth == kDstDepth) {
                 // Nothing to add here: keep the original pixel bit-exact.
@@ -292,6 +382,31 @@ void Composite(const HostImage& source, int offset_x, int offset_y, const ImageF
     });
 }
 
+// Straight copy for the case where the glow contributes nothing; the
+// destination can be larger than the source, and the extra area is empty.
+void CopySource(const GlowRender& render, TaskRunner& runner) {
+    const HostImage& source = render.source;
+    const HostImage& dest = render.dest;
+    const int pixel_size = dest.depth == PixelDepth::kBits8 ? 4 : (dest.depth == PixelDepth::kBits16 ? 8 : 16);
+
+    ParallelRows(runner, dest.height, [&](int begin, int end, int) {
+        for (int y = begin; y < end; ++y) {
+            std::uint8_t* dst_row = dest.Row(y);
+            std::memset(dst_row, 0, static_cast<std::size_t>(dest.width) * static_cast<std::size_t>(pixel_size));
+            if (source.Empty() || source.depth != dest.depth) continue;
+            const int src_y = y + render.source_offset_y;
+            if (src_y < 0 || src_y >= source.height) continue;
+            const int x_begin = std::max(0, -render.source_offset_x);
+            const int x_end = std::min(dest.width, source.width - render.source_offset_x);
+            if (x_end <= x_begin) continue;
+            const std::uint8_t* src_row = source.ConstRow(src_y);
+            std::memcpy(dst_row + static_cast<std::ptrdiff_t>(x_begin) * pixel_size,
+                        src_row + static_cast<std::ptrdiff_t>(x_begin + render.source_offset_x) * pixel_size,
+                        static_cast<std::size_t>(x_end - x_begin) * static_cast<std::size_t>(pixel_size));
+        }
+    });
+}
+
 const TransferFunction& SelectTransfer(WorkingSpace space, PixelDepth depth) {
     switch (space) {
         case WorkingSpace::kLinear: return TransferFunction::Identity();
@@ -319,13 +434,27 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
                       TaskRunner& runner) {
     if (render.dest.Empty()) return GlowResult::kInvalidArguments;
 
+    const float gain = std::max(0.0f, settings.intensity) * std::exp2(settings.exposure);
+    if (!(gain > 0.0f)) {
+        // Nothing to add: skip the pyramid entirely.
+        if (settings.composite == CompositeMode::kGlowOnly) {
+            GlowRender empty = render;
+            empty.source = HostImage();
+            CopySource(empty, runner);
+        } else {
+            CopySource(render, runner);
+        }
+        return GlowResult::kOk;
+    }
+
     const TransferFunction& transfer = SelectTransfer(settings.working_space, render.dest.depth);
 
     const float sigma_x = RadiusToSigma(settings.radius_x);
     const float sigma_y = RadiusToSigma(settings.radius_y);
     const float sigma = std::max(sigma_x, sigma_y);
 
-    const GlowPlan plan = MakeGlowPlan(sigma, settings.quality);
+    const int min_scale = MinimumBaseScale(render.dest.width, render.dest.height, settings.quality);
+    const GlowPlan plan = MakeGlowPlan(sigma, settings.quality, min_scale);
     const int scale = plan.base_scale;
 
     const int level0_width = (render.dest.width + scale - 1) / scale;
@@ -379,7 +508,7 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
     // Exposure, intensity, saturation and tint are linear, so they can run on
     // the pyramid before the final upsample.
     GlowColorTransform color;
-    color.gain = std::max(0.0f, settings.intensity) * std::exp2(settings.exposure);
+    color.gain = gain;
     color.saturation = std::max(0.0f, settings.saturation);
     const float tint = std::clamp(settings.tint_amount, 0.0f, 1.0f);
     color.tint_r = 1.0f + (settings.tint_r - 1.0f) * tint;
@@ -398,6 +527,18 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
     ctx.dither = settings.dither && render.dest.depth != PixelDepth::kFloat32;
     ctx.smooth_upsample = settings.quality >= Quality::kHigh;
     ctx.scale = scale;
+
+    std::vector<AxisTaps> columns;
+    ctx.taps = ctx.smooth_upsample ? 4 : 2;
+    if (scale != 1) {
+        const float inv_scale = 1.0f / static_cast<float>(scale);
+        columns.resize(static_cast<std::size_t>(render.dest.width));
+        for (int x = 0; x < render.dest.width; ++x) {
+            columns[static_cast<std::size_t>(x)] =
+                MakeTaps((static_cast<float>(x) + 0.5f) * inv_scale - 0.5f, level0.width, ctx.smooth_upsample);
+        }
+        ctx.columns = columns.data();
+    }
 
     Composite(render.source, render.source_offset_x, render.source_offset_y, level0, ctx, render.dest, runner);
     return GlowResult::kOk;

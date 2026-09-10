@@ -398,6 +398,15 @@ void TestZeroRadiusAndZeroIntensity() {
         }
     }
     Check(identical, "zero intensity leaves the image untouched");
+
+    // The same fast path with an offset destination.
+    TestImage offset_dest(48 + 20, 48 + 20, PixelDepth::kBits16);
+    render.dest = offset_dest.View();
+    render.source_offset_x = -10;
+    render.source_offset_y = -10;
+    Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk, "offset copy succeeds");
+    Check(offset_dest.GetPixel(30, 30).r == source.GetPixel(20, 20).r, "offset copy lands in the right place");
+    Check(offset_dest.GetPixel(2, 2).a == 0.0f, "offset copy leaves the margin empty");
 }
 
 }  // namespace

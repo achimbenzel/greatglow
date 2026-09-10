@@ -221,7 +221,9 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     settings.tint_g = tint[1];
     settings.tint_b = tint[2];
     settings.tint_amount = std::clamp(tint_amount * 0.01f, 0.0f, 1.0f);
-    settings.quality = static_cast<Quality>(std::clamp(quality - 1, 0, 3));
+    int quality_level = std::clamp(quality - 1, 0, 3);
+    if (in_data->quality == PF_Quality_LO) quality_level = std::max(0, quality_level - 1);
+    settings.quality = static_cast<Quality>(quality_level);
     settings.composite = static_cast<CompositeMode>(std::clamp(composite - 1, 0, 2));
     settings.working_space = static_cast<WorkingSpace>(std::clamp(working_space - 1, 0, 2));
     params.expand_bounds = expand_bounds;

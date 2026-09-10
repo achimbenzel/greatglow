@@ -23,7 +23,12 @@ struct GlowPlan {
     float Reach() const;
 };
 
+// Smallest pyramid step that keeps the level-0 buffer within the quality
+// setting's memory budget. Large frames start the pyramid lower down, which is
+// what keeps a 4K render from allocating hundreds of megabytes per frame.
+int MinimumBaseScale(int width, int height, Quality quality);
+
 // `sigma` is the target glow sigma in render-resolution pixels.
-GlowPlan MakeGlowPlan(float sigma, Quality quality, int max_base_scale = 8);
+GlowPlan MakeGlowPlan(float sigma, Quality quality, int min_base_scale = 1);
 
 }  // namespace abglow
