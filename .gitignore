@@ -1,0 +1,14 @@
+build/
+build-*/
+out/
+third_party/AfterEffectsSDK/
+*.aex
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+*.lib
+.vs/
+.vscode/
+CMakeUserPresets.json
