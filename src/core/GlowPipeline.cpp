@@ -77,87 +77,114 @@ inline PixelF ExtractHighlight(const PixelF& linear, const Threshold& threshold)
                   linear.b * contribution};
 }
 
+// Taps of a tent prefilter for one axis. Decimating with a box places each
+// sample at its cell's centre, which preserves the light but not its centre of
+// mass, so a shape moving across the grid makes the glow lead and lag by up to
+// a twelfth of a cell - a sawtooth with the period of the pyramid step, and the
+// shimmer that goes with it. A tent spanning two cells reproduces linear
+// functions, so first moments survive the decimation. At scale 1 it degenerates
+// to (0, 1, 0) and costs nothing.
+struct TentTaps {
+    int first = 0;
+    int count = 0;
+    float weight[2 * kMaxBaseScale + 2] = {};
+};
+
+TentTaps MakeTentTaps(int scale) {
+    TentTaps taps;
+    const float span = static_cast<float>(scale);
+    const float centre = 0.5f * span;
+    taps.first = static_cast<int>(std::ceil(centre - span - 0.5f));
+    const int last = static_cast<int>(std::floor(centre + span - 0.5f));
+    taps.count = std::min(last - taps.first + 1, static_cast<int>(sizeof(taps.weight) / sizeof(float)));
+    float sum = 0.0f;
+    for (int i = 0; i < taps.count; ++i) {
+        const float d = static_cast<float>(taps.first + i) + 0.5f - centre;
+        const float w = 1.0f - std::fabs(d) / span;
+        taps.weight[i] = w > 0.0f ? w : 0.0f;
+        sum += taps.weight[i];
+    }
+    // Normalised over the whole support, including taps that fall outside the
+    // layer: a cell hanging over the edge must dim, not be renormalised back up.
+    if (sum > 0.0f) {
+        for (int i = 0; i < taps.count; ++i) taps.weight[i] /= sum;
+    }
+    return taps;
+}
+
+template <PixelDepth kDepth>
+void ExtractSourceRow(const HostImage& source, int src_y, const Threshold& threshold,
+                      const TransferFunction& transfer, PixelF* out) {
+    const void* row = source.ConstRow(src_y);
+    for (int x = 0; x < source.width; ++x) {
+        out[x] = ExtractHighlight(LinearizePremultiplied(ReadRowPixel<kDepth>(row, x), transfer), threshold);
+    }
+}
+
+// One level-0 row, horizontally filtered: level-0 column lx gathers source
+// pixels lx * scale + block_offset + taps.first ... for taps.count of them.
+void FilterRowHorizontal(const PixelF* extracted, int source_width, int scale, int block_offset,
+                         const TentTaps& taps, int level0_width, PixelF* out) {
+    for (int lx = 0; lx < level0_width; ++lx) {
+        const int base = lx * scale + block_offset + taps.first;
+        PixelF acc{0.0f, 0.0f, 0.0f, 0.0f};
+        const int begin = std::max(0, -base);
+        const int end = std::min(taps.count, source_width - base);
+        for (int i = begin; i < end; ++i) {
+            const PixelF& p = extracted[base + i];
+            const float w = taps.weight[i];
+            acc.a += p.a * w;
+            acc.r += p.r * w;
+            acc.g += p.g * w;
+            acc.b += p.b * w;
+        }
+        out[lx] = acc;
+    }
+}
+
 template <PixelDepth kDepth>
 void ExtractRows(const HostImage& source, int offset_x, int offset_y, int scale, const PixelPoint& grid_start,
                  const Threshold& threshold, const TransferFunction& transfer, ImageF& level0, int y_begin,
                  int y_end) {
-    const float inv_samples = 1.0f / static_cast<float>(scale * scale);
     // Source x of level-0 column lx is lx * scale + block_offset_x.
     const int block_offset_x = grid_start.x + offset_x;
     const int block_offset_y = grid_start.y + offset_y;
-    // Columns whose whole block lies inside the source image, and the wider
-    // range of columns that touch it at all. The partial columns at the far
-    // edge have to be summed too: dropping them would throw away up to
-    // `scale` columns of real image, which moves the glow sideways whenever
-    // the radius changes `scale`.
-    const int full_begin = std::clamp(CeilDiv(-block_offset_x, scale), 0, level0.width);
-    const int full_end = std::clamp((source.width - block_offset_x) / scale, full_begin, level0.width);
-    const int any_begin = std::clamp(CeilDiv(-block_offset_x - scale + 1, scale), 0, full_begin);
-    const int any_end = std::clamp(CeilDiv(source.width - block_offset_x, scale), full_end, level0.width);
+    const TentTaps taps = MakeTentTaps(scale);
+
+    std::vector<PixelF> extracted(static_cast<std::size_t>(source.width));
+    // Ring of horizontally filtered source rows, so each is built once even
+    // though consecutive level-0 rows share most of them.
+    const int slots = taps.count;
+    std::vector<PixelF> ring(static_cast<std::size_t>(slots) * static_cast<std::size_t>(level0.width));
+    std::vector<int> ring_row(static_cast<std::size_t>(slots), -1);
+
+    auto row_for = [&](int src_y) -> const PixelF* {
+        const int slot = ((src_y % slots) + slots) % slots;
+        PixelF* out = ring.data() + static_cast<std::size_t>(slot) * static_cast<std::size_t>(level0.width);
+        if (ring_row[static_cast<std::size_t>(slot)] != src_y) {
+            ExtractSourceRow<kDepth>(source, src_y, threshold, transfer, extracted.data());
+            FilterRowHorizontal(extracted.data(), source.width, scale, block_offset_x, taps, level0.width, out);
+            ring_row[static_cast<std::size_t>(slot)] = src_y;
+        }
+        return out;
+    };
 
     for (int ly = y_begin; ly < y_end; ++ly) {
         PixelF* out = level0.Row(ly);
-        const int block_y = ly * scale + block_offset_y;
-        const bool rows_inside = block_y >= 0 && block_y + scale <= source.height;
+        for (int lx = 0; lx < level0.width; ++lx) out[lx] = PixelF{0.0f, 0.0f, 0.0f, 0.0f};
 
-        for (int lx = 0; lx < any_begin; ++lx) out[lx] = PixelF{0.0f, 0.0f, 0.0f, 0.0f};
-        for (int lx = any_end; lx < level0.width; ++lx) out[lx] = PixelF{0.0f, 0.0f, 0.0f, 0.0f};
-
-        // Blocks that hang over an edge: accumulate only the samples that exist.
-        auto clipped_blocks = [&](int lx_begin, int lx_end) {
-            for (int lx = lx_begin; lx < lx_end; ++lx) {
-                PixelF sum{0.0f, 0.0f, 0.0f, 0.0f};
-                for (int sy = 0; sy < scale; ++sy) {
-                    const int src_y = block_y + sy;
-                    if (src_y < 0 || src_y >= source.height) continue;
-                    const void* row = source.ConstRow(src_y);
-                    for (int sx = 0; sx < scale; ++sx) {
-                        const int src_x = lx * scale + sx + block_offset_x;
-                        if (src_x < 0 || src_x >= source.width) continue;
-                        const PixelF raw = ReadRowPixel<kDepth>(row, src_x);
-                        const PixelF highlight =
-                            ExtractHighlight(LinearizePremultiplied(raw, transfer), threshold);
-                        sum.a += highlight.a;
-                        sum.r += highlight.r;
-                        sum.g += highlight.g;
-                        sum.b += highlight.b;
-                    }
-                }
-                out[lx] = PixelF{sum.a * inv_samples, sum.r * inv_samples, sum.g * inv_samples,
-                                 sum.b * inv_samples};
+        const int base = ly * scale + block_offset_y + taps.first;
+        const int begin = std::max(0, -base);
+        const int end = std::min(taps.count, source.height - base);
+        for (int j = begin; j < end; ++j) {
+            const PixelF* row = row_for(base + j);
+            const float w = taps.weight[j];
+            for (int lx = 0; lx < level0.width; ++lx) {
+                out[lx].a += row[lx].a * w;
+                out[lx].r += row[lx].r * w;
+                out[lx].g += row[lx].g * w;
+                out[lx].b += row[lx].b * w;
             }
-        };
-
-        if (!rows_inside) {
-            clipped_blocks(any_begin, any_end);
-            continue;
-        }
-        clipped_blocks(any_begin, full_begin);
-        clipped_blocks(full_end, any_end);
-
-        if (scale == 1) {
-            const void* row = source.ConstRow(block_y);
-            for (int lx = full_begin; lx < full_end; ++lx) {
-                const PixelF raw = ReadRowPixel<kDepth>(row, lx + block_offset_x);
-                out[lx] = ExtractHighlight(LinearizePremultiplied(raw, transfer), threshold);
-            }
-            continue;
-        }
-
-        for (int lx = full_begin; lx < full_end; ++lx) {
-            PixelF sum{0.0f, 0.0f, 0.0f, 0.0f};
-            for (int sy = 0; sy < scale; ++sy) {
-                const void* row = source.ConstRow(block_y + sy);
-                for (int sx = 0; sx < scale; ++sx) {
-                    const PixelF raw = ReadRowPixel<kDepth>(row, lx * scale + sx + block_offset_x);
-                    const PixelF highlight = ExtractHighlight(LinearizePremultiplied(raw, transfer), threshold);
-                    sum.a += highlight.a;
-                    sum.r += highlight.r;
-                    sum.g += highlight.g;
-                    sum.b += highlight.b;
-                }
-            }
-            out[lx] = PixelF{sum.a * inv_samples, sum.r * inv_samples, sum.g * inv_samples, sum.b * inv_samples};
         }
     }
 }

@@ -551,6 +551,71 @@ void TestRegionOfInterestMatchesFullFrame() {
     }
 }
 
+// Decimating the highlights with a box preserves their light but not their
+// centre of mass, so a shape crossing the pyramid grid made the glow lead and
+// lag by up to a twelfth of a cell - a sawtooth with the period of the pyramid
+// step, which is the shimmer seen on a moving layer. A tent prefilter
+// reproduces linear functions, so the centroid survives the decimation.
+void TestGlowTracksSubPixelMotion() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 2400;
+    const int height = 2000;
+    const float radius = 240.0f;
+    float worst = 0.0f;
+
+    for (int step = 0; step <= 16; ++step) {
+        const double shift = step * 0.25;
+        const double left = 1150.0 + shift;
+        const double right = left + 40.0;
+
+        TestImage source(width, height, PixelDepth::kFloat32);
+        for (int y = height / 2 - 20; y < height / 2 + 20; ++y) {
+            for (int x = 1140; x < 1200; ++x) {
+                const double covered =
+                    std::max(0.0, std::min(static_cast<double>(x) + 1.0, right) - std::max(static_cast<double>(x), left));
+                if (covered <= 0.0) continue;
+                const float a = static_cast<float>(covered);
+                source.SetPixel(x, y, PixelF{a, 8.0f * a, 8.0f * a, 8.0f * a});
+            }
+        }
+
+        GlowSettings settings = DefaultSettings();
+        settings.threshold = 0.5f;
+        settings.radius_x = settings.radius_y = radius;
+        settings.composite = CompositeMode::kGlowOnly;
+        settings.working_space = WorkingSpace::kLinear;
+        settings.dither = false;
+
+        TestImage dest(width, height, PixelDepth::kFloat32);
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
+              "sub-pixel render succeeds");
+
+        double source_mass = 0.0;
+        double source_moment = 0.0;
+        double glow_mass = 0.0;
+        double glow_moment = 0.0;
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                const double sv = source.GetPixel(x, y).g;
+                source_mass += sv;
+                source_moment += sv * (x + 0.5);
+                const double gv = dest.GetPixel(x, y).g;
+                glow_mass += gv;
+                glow_moment += gv * (x + 0.5);
+            }
+        }
+        Check(source_mass > 0.0 && glow_mass > 0.0, "sub-pixel test carries light");
+        const double drift = (glow_moment / glow_mass) - (source_moment / source_mass);
+        worst = std::max(worst, static_cast<float>(std::fabs(drift)));
+    }
+    Check(worst < 0.05f, "glow follows the source through sub-pixel motion");
+}
+
 void TestThresholdAndPassThrough() {
     MallocAllocator allocator;
     ThreadPoolRunner runner(2);
@@ -810,6 +875,7 @@ int main() {
     TestBrightnessIsResolutionIndependent();
     TestDitherIsQuietAndStill();
     TestRegionOfInterestMatchesFullFrame();
+    TestGlowTracksSubPixelMotion();
     TestThresholdAndPassThrough();
     TestTransparentInput();
     TestHdrNotClamped();

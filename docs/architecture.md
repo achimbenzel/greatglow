@@ -52,10 +52,22 @@ glow's light at Quarter resolution on anti-aliased text — a visible difference
 that no amount of getting the pyramid right would have fixed.
 `TestBrightnessIsResolutionIndependent` asserts 2%; measured spread is 0.1%.
 
-Extraction and the first downsample are one pass: each pyramid-level-0 pixel is
-the average of the extracted light in the block of source pixels under it, so a
-single very bright pixel still contributes its full energy rather than being
-thresholded away after averaging.
+Extraction and the first downsample are one pass: each pyramid-level-0 pixel
+gathers the extracted light under it, so a single very bright pixel still
+contributes its full energy rather than being thresholded away after averaging.
+
+The gather is a **tent spanning two cells**, not a box over one. A box carries
+the light but not its centre of mass: it places each sample at its cell's
+centre, and the difference between that and where the light actually sits inside
+the cell oscillates as content crosses the grid. A shape moving smoothly then
+makes the glow lead and lag by up to a twelfth of a cell — a sawtooth with the
+period of the pyramid step, ±0.6 px at a step of 15 and ±1.3 px at 30, which is
+the shimmer seen on a moving layer. A tent reproduces linear functions, so first
+moments survive the decimation: measured drift between the source's centroid and
+the glow's, over sub-pixel motion, drops from that sawtooth to 0.0004 px at
+every radius from 100 to 1600. At a step of 1 the tent degenerates to (0, 1, 0)
+and costs nothing; the two passes are separable and each source row is filtered
+once, so the whole change costs about 3%.
 
 ### Multi-scale diffusion
 
