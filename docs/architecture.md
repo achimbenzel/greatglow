@@ -40,6 +40,18 @@ readily as a white one, which is what people expect from a glow. Above the knee
 the gain approaches 1, so an HDR highlight of 50.0 keeps almost all of its
 energy instead of being clipped to white.
 
+`level` is the pixel's own brightness — the premultiplied value divided by
+alpha — not its brightness times its coverage. A half-covered pixel on the edge
+of a bright glyph is bright; it just covers less area, and it should emit half
+the light rather than fail the threshold for looking dim. That makes the
+extracted light exactly linear in coverage, which is what the resolution
+independence below rests on: After Effects renders a reduced-resolution preview
+from a downsampled layer, so the same edge arrives as fewer, more partially
+covered pixels. Thresholding the premultiplied value instead cost 8% of the
+glow's light at Quarter resolution on anti-aliased text — a visible difference
+that no amount of getting the pyramid right would have fixed.
+`TestBrightnessIsResolutionIndependent` asserts 2%; measured spread is 0.1%.
+
 Extraction and the first downsample are one pass: each pyramid-level-0 pixel is
 the average of the extracted light in the block of source pixels under it, so a
 single very bright pixel still contributes its full energy rather than being
@@ -136,7 +148,9 @@ comp pixels (`TestSizeIsResolutionIndependent` asserts 2%):
 | 10% | 795.7 | 795.8 | 791.9 | 798.5 |
 | 1% | 1443.7 | 1443.7 | 1438.8 | 1450.8 |
 
-0.8% spread, against 2.5% before these fixes.
+0.8% spread, against 2.5% before these fixes. Size is only half of it, though
+— see the extraction section above for why the same glow used to come out
+*dimmer* at reduced resolution even when its size was right.
 
 Measured falloff of a point source (from `abglow_preview`, half-width at each
 fraction of the peak):

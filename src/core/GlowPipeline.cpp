@@ -54,10 +54,19 @@ inline PixelF LinearizePremultiplied(const PixelF& p, const TransferFunction& tr
 // Soft-knee highlight isolation. The brightest channel drives the threshold so
 // saturated colours glow as readily as white, and above the knee the HDR value
 // passes through untouched.
+//
+// The threshold judges the pixel's own brightness, not its brightness times its
+// coverage: a half-covered pixel on the edge of a bright glyph is bright, it
+// just covers less area, and it should emit half the light rather than be
+// rejected for being dim. Testing the premultiplied value instead makes the
+// extracted light a non-linear function of coverage, so the same layer emits
+// measurably less once After Effects has downsampled it for a reduced render
+// resolution - 8% less at Quarter on anti-aliased text.
 inline PixelF ExtractHighlight(const PixelF& linear, const Threshold& threshold) {
     // Premultiplied pixels with no alpha emit no light, whatever RGB they carry.
     if (linear.a <= kTransparent) return PixelF{0.0f, 0.0f, 0.0f, 0.0f};
-    const float level = std::max(linear.r, std::max(linear.g, linear.b));
+    const float inv_coverage = linear.a >= kOpaque ? 1.0f : 1.0f / linear.a;
+    const float level = std::max(linear.r, std::max(linear.g, linear.b)) * inv_coverage;
     if (level <= 0.0f) return PixelF{0.0f, 0.0f, 0.0f, 0.0f};
 
     float above = level - threshold.level;

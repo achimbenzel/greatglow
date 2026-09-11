@@ -344,6 +344,67 @@ void TestSizeIsResolutionIndependent() {
     Check(widest <= narrowest * 1.02f, "glow is the same size at every render resolution");
 }
 
+// After Effects renders a reduced-resolution preview from a downsampled layer,
+// so anti-aliased edges carry the same light in fewer, partially covered
+// pixels. Extraction has to stay linear in coverage or the same glow comes out
+// dimmer at Half and Quarter - thresholding the premultiplied value made it 8%
+// dimmer at Quarter on text.
+void TestBrightnessIsResolutionIndependent() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int comp_w = 640;
+    const int comp_h = 360;
+    const float radius_comp = 120.0f;
+    double brightest = 0.0;
+    double dimmest = 1e30;
+
+    for (int den : {1, 2, 4}) {
+        const int width = comp_w / den;
+        const int height = comp_h / den;
+        TestImage source(width, height, PixelDepth::kFloat32);
+        TestImage dest(width, height, PixelDepth::kFloat32);
+
+        // A stroke whose edges land off the pixel grid at every resolution, so
+        // the coverage really is spread over partial pixels.
+        const float left = 260.0f;
+        const float right = 274.5f;
+        for (int y = height / 3; y < 2 * height / 3; ++y) {
+            for (int x = 0; x < width; ++x) {
+                const float x0 = static_cast<float>(x * den);
+                const float x1 = x0 + static_cast<float>(den);
+                const float covered = std::max(0.0f, std::min(x1, right) - std::max(x0, left));
+                const float alpha = covered / static_cast<float>(den);
+                if (alpha <= 0.0f) continue;
+                source.SetPixel(x, y, PixelF{alpha, 0.0f, alpha, alpha});
+            }
+        }
+
+        GlowSettings settings = DefaultSettings();
+        settings.threshold = 0.5f;
+        settings.threshold_softness = 0.69f;
+        settings.radius_x = settings.radius_y = radius_comp / static_cast<float>(den);
+        settings.composite = CompositeMode::kGlowOnly;
+        settings.working_space = WorkingSpace::kLinear;
+
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
+              "brightness render succeeds");
+
+        double energy = 0.0;
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) energy += dest.GetPixel(x, y).b;
+        }
+        energy *= static_cast<double>(den) * static_cast<double>(den);
+        Check(energy > 0.0, "glow carries light at every resolution");
+        brightest = std::max(brightest, energy);
+        dimmest = std::min(dimmest, energy);
+    }
+    Check(brightest <= dimmest * 1.02, "glow is the same brightness at every render resolution");
+}
+
 void TestThresholdAndPassThrough() {
     MallocAllocator allocator;
     ThreadPoolRunner runner(2);
@@ -600,6 +661,7 @@ int main() {
     TestNoUpsampleCreases();
     TestGlowDoesNotSlideWithRadius();
     TestSizeIsResolutionIndependent();
+    TestBrightnessIsResolutionIndependent();
     TestThresholdAndPassThrough();
     TestTransparentInput();
     TestHdrNotClamped();

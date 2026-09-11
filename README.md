@@ -107,8 +107,9 @@ Ship release builds from Visual Studio; mingw is for verification.
 Radius is in full-resolution pixels: it is scaled automatically for draft
 resolutions and for non-square pixels, so a glow stays round and the same size
 at Half or Quarter resolution — measured spread across Full / Half / Third /
-Quarter is 0.8%. Comparing resolutions in the viewer needs a fixed zoom, since
-After Effects upscales a reduced-resolution render for display.
+Quarter is 0.8% in size and 0.1% in brightness. Comparing resolutions in the
+viewer needs a fixed zoom, since After Effects upscales a reduced-resolution
+render for display.
 
 ## Testing
 
