@@ -123,6 +123,13 @@ Quarter is 0.8% in size and 0.1% in brightness. Comparing resolutions in the
 viewer needs a fixed zoom, since After Effects upscales a reduced-resolution
 render for display.
 
+### Project compatibility
+
+Parameter indices and ids are part of the saved project format. They are frozen
+with literal numbers in `AbGlowParams.h` and `AbGlowParams.cpp` and pinned by
+`static_assert`, so a new parameter can only be appended. A project saved by any
+build from v1.1.0 onward opens correctly in any later build.
+
 ### Known limitation: non-square pixels
 
 The per-level Gaussian is anisotropic, but the pyramid's own resampling — the

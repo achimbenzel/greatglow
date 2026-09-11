@@ -291,6 +291,12 @@ Two properties matter more than the noise shaping:
 * **Memory** comes from `PF_HandleSuite1`, so After Effects can account for it.
   The level-0 buffer is capped by a per-quality pixel budget (4 MP at Normal),
   which keeps a 4K frame near 80 MB instead of 300 MB.
+* **Parameter layout is a file format.** Every project that uses the effect
+  stores its parameter values by index, and their ids alongside. Both enums are
+  therefore spelled out with literal numbers and pinned by `static_assert`: a new
+  parameter takes the next free number and is appended, and anything else is a
+  compile error. Inserting one in the middle once shifted three ids and made
+  projects saved by the previous build open with their groups mismatched.
 * **PiPL.** After Effects still reads the PiPL resource, and its flags must
   agree with `PF_Cmd_GLOBAL_SETUP`. `tools/generate_pipl.py` writes the resource
   and a header with the same flag values, which `AbGlowEntry.cpp`

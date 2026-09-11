@@ -5,31 +5,34 @@
 
 namespace abglow {
 
-// Parameter order is part of the saved project format: append, never reorder.
+// Parameter order is part of the saved project format: append, never insert or
+// reorder, or projects saved by an earlier build open with their values against
+// the wrong parameters. The numbers are spelled out so a stray insertion is a
+// compile error rather than a corrupted project.
 enum ParamIndex {
     kParamInput = 0,
-    kParamGlowGroupStart,
-    kParamThreshold,
-    kParamSoftness,
-    kParamRadius,
-    kParamIntensity,
-    kParamGlowGroupEnd,
-    kParamColorGroupStart,
-    kParamExposure,
-    kParamSaturation,
-    kParamTint,
-    kParamTintAmount,
-    kParamColorGroupEnd,
-    kParamRenderGroupStart,
-    kParamQuality,
-    kParamComposite,
-    kParamWorkingSpace,
-    kParamExpandBounds,
-    kParamRolloff,
-    kParamRenderGroupEnd,
-    kParamAboutGroupStart,
-    kParamAboutGroupEnd,
-    kParamCount
+    kParamGlowGroupStart = 1,
+    kParamThreshold = 2,
+    kParamSoftness = 3,
+    kParamRadius = 4,
+    kParamIntensity = 5,
+    kParamGlowGroupEnd = 6,
+    kParamColorGroupStart = 7,
+    kParamExposure = 8,
+    kParamSaturation = 9,
+    kParamTint = 10,
+    kParamTintAmount = 11,
+    kParamColorGroupEnd = 12,
+    kParamRenderGroupStart = 13,
+    kParamQuality = 14,
+    kParamComposite = 15,
+    kParamWorkingSpace = 16,
+    kParamExpandBounds = 17,
+    kParamRenderGroupEnd = 18,
+    kParamAboutGroupStart = 19,
+    kParamAboutGroupEnd = 20,
+    kParamRolloff = 21,
+    kParamCount = 22
 };
 
 PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data);

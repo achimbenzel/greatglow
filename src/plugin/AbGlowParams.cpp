@@ -9,31 +9,46 @@
 namespace abglow {
 namespace {
 
-// Parameter ids are stable identifiers used by After Effects when a project is
-// reopened; they must never change once shipped.
+// Parameter ids are how After Effects finds a parameter's saved value when a
+// project is reopened. They are written out with every project that uses the
+// effect, so they must never change once shipped: a new parameter takes the
+// next free number and is appended, never inserted. Spelling them out rather
+// than letting the enum number itself is what makes that impossible to get
+// wrong by accident.
 enum ParamId {
     kIdGlowGroup = 1,
-    kIdThreshold,
-    kIdSoftness,
-    kIdRadius,
-    kIdIntensity,
-    kIdGlowGroupEnd,
-    kIdColorGroup,
-    kIdExposure,
-    kIdSaturation,
-    kIdTint,
-    kIdTintAmount,
-    kIdColorGroupEnd,
-    kIdRenderGroup,
-    kIdQuality,
-    kIdComposite,
-    kIdWorkingSpace,
-    kIdExpandBounds,
-    kIdRolloff,
-    kIdRenderGroupEnd,
-    kIdAboutGroup,
-    kIdAboutGroupEnd
+    kIdThreshold = 2,
+    kIdSoftness = 3,
+    kIdRadius = 4,
+    kIdIntensity = 5,
+    kIdGlowGroupEnd = 6,
+    kIdColorGroup = 7,
+    kIdExposure = 8,
+    kIdSaturation = 9,
+    kIdTint = 10,
+    kIdTintAmount = 11,
+    kIdColorGroupEnd = 12,
+    kIdRenderGroup = 13,
+    kIdQuality = 14,
+    kIdComposite = 15,
+    kIdWorkingSpace = 16,
+    kIdExpandBounds = 17,
+    kIdRenderGroupEnd = 18,
+    kIdAboutGroup = 19,
+    kIdAboutGroupEnd = 20,
+    kIdRolloff = 21
 };
+
+// The layout as shipped. These numbers are in every saved project that uses the
+// effect, so a change here is a change to a file format other people's work
+// depends on. Appending is fine; anything else is not.
+static_assert(kParamCount == 22, "parameters may only be appended");
+static_assert(kParamExpandBounds == 17 && kParamRenderGroupEnd == 18, "shipped parameter order");
+static_assert(kParamAboutGroupStart == 19 && kParamAboutGroupEnd == 20, "shipped parameter order");
+static_assert(kParamRolloff == 21, "shipped parameter order");
+static_assert(kIdExpandBounds == 17 && kIdRenderGroupEnd == 18, "shipped parameter ids");
+static_assert(kIdAboutGroup == 19 && kIdAboutGroupEnd == 20, "shipped parameter ids");
+static_assert(kIdRolloff == 21, "shipped parameter ids");
 
 constexpr char kQualityChoices[] = "Draft|Normal|High|Best";
 constexpr char kCompositeChoices[] = "Add|Screen|Glow Only";
@@ -171,9 +186,6 @@ PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data) {
     PF_ADD_CHECKBOXX("Expand Bounds", TRUE, 0, kIdExpandBounds);
 
     AEFX_CLR_STRUCT(def);
-    PF_ADD_POPUPX("Highlight Rolloff", 2, 1, kRolloffChoices, 0, kIdRolloff);
-
-    AEFX_CLR_STRUCT(def);
     PF_END_TOPIC(kIdRenderGroupEnd);
 
     // An empty group whose header is the build. Nothing to configure; it is
@@ -183,6 +195,10 @@ PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data) {
 
     AEFX_CLR_STRUCT(def);
     PF_END_TOPIC(kIdAboutGroupEnd);
+
+    // Appended, so every parameter shipped before it keeps its index.
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_POPUPX("Highlight Rolloff", 2, 1, kRolloffChoices, 0, kIdRolloff);
 
     out_data->num_params = kParamCount;
     return PF_Err_NONE;
