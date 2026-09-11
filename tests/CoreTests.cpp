@@ -405,6 +405,83 @@ void TestBrightnessIsResolutionIndependent() {
     Check(brightest <= dimmest * 1.02, "glow is the same brightness at every render resolution");
 }
 
+// Dither must not invent light. With expanded bounds most of the output buffer
+// is untouched black, and a +-1 LSB triangular dither rounds an exact zero up a
+// quarter of the time, which showed as neutral speckle scattered around the
+// layer. It must also be keyed to the layer, not to the output buffer: the
+// expanded rect moves as a layer's Position animates, so a buffer-keyed pattern
+// crawls over the whole frame and shimmers.
+void TestDitherIsQuietAndStill() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int layer_w = 160;
+    const int layer_h = 100;
+    const float radius = 120.0f;
+    const int expansion = static_cast<int>(
+        std::ceil(abglow::MakeGlowPlan(abglow::RadiusToSigma(radius), Quality::kNormal).Reach()));
+
+    TestImage source(layer_w, layer_h, PixelDepth::kBits8);
+    for (int y = 15; y < layer_h - 15; ++y) {
+        for (int x = 15; x < layer_w - 15; ++x) source.SetPixel(x, y, PixelF{1.0f, 1.0f, 0.29f, 0.29f});
+    }
+
+    GlowSettings settings = DefaultSettings();
+    settings.threshold = 0.5f;
+    settings.radius_x = settings.radius_y = radius;
+    settings.intensity = 0.09f;
+    settings.exposure = 4.78f;
+    settings.dither = true;
+
+    auto render_at = [&](int extra, TestImage& dest) {
+        dest.Resize(layer_w + 2 * expansion + extra, layer_h + 2 * expansion + extra, PixelDepth::kBits8);
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        render.source_offset_x = -expansion - extra;
+        render.source_offset_y = -expansion - extra;
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
+              "dither render succeeds");
+    };
+
+    TestImage a;
+    TestImage b;
+    render_at(0, a);
+    render_at(1, b);
+
+    // The far corner of the expanded rect carries no glow worth a code value.
+    int lifted = 0;
+    int corner = 0;
+    for (int y = 2; y < 40; ++y) {
+        for (int x = 2; x < 40; ++x) {
+            const PixelF p = a.GetPixel(x, y);
+            ++corner;
+            if (std::lround(p.r * 255.0f) || std::lround(p.g * 255.0f) || std::lround(p.b * 255.0f)) ++lifted;
+        }
+    }
+    Check(lifted * 20 < corner, "dither leaves untouched black alone");
+
+    // Shifting the buffer by a pixel must shift the render, not reshuffle it.
+    int differing = 0;
+    int total = 0;
+    long worst = 0;
+    for (int y = 0; y < layer_h + 2 * expansion; ++y) {
+        for (int x = 0; x < layer_w + 2 * expansion; ++x) {
+            const PixelF p = a.GetPixel(x, y);
+            const PixelF q = b.GetPixel(x + 1, y + 1);
+            ++total;
+            const long dr = std::labs(std::lround(p.r * 255.0f) - std::lround(q.r * 255.0f));
+            const long dg = std::labs(std::lround(p.g * 255.0f) - std::lround(q.g * 255.0f));
+            const long db = std::labs(std::lround(p.b * 255.0f) - std::lround(q.b * 255.0f));
+            const long d = std::max(dr, std::max(dg, db));
+            if (d != 0) ++differing;
+            worst = std::max(worst, d);
+        }
+    }
+    Check(worst <= 1, "moving the layer never shifts a pixel by more than one code value");
+    Check(differing * 10 < total, "dither does not crawl when the layer moves");
+}
+
 void TestThresholdAndPassThrough() {
     MallocAllocator allocator;
     ThreadPoolRunner runner(2);
@@ -662,6 +739,7 @@ int main() {
     TestGlowDoesNotSlideWithRadius();
     TestSizeIsResolutionIndependent();
     TestBrightnessIsResolutionIndependent();
+    TestDitherIsQuietAndStill();
     TestThresholdAndPassThrough();
     TestTransparentInput();
     TestHdrNotClamped();

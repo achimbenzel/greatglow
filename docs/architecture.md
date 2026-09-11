@@ -208,10 +208,27 @@ untouched area of the frame is never altered by an encode/decode round trip.
 Alpha grows as `a + glow_a·(1 − a)`, clamped to 1, so the glow is visible where
 the layer was transparent without breaking premultiplication.
 
-For 8 and 16 bpc output a ±1 LSB triangular dither is applied to the pixels the
-glow touches, which removes the stair-stepping a wide, shallow gradient would
-otherwise show (measured: longest identical run along a gradient drops from 33
-to 12 pixels in 8 bpc).
+For 8 and 16 bpc output the quantisation is stochastic: a sample lands on one
+of the two code values it sits between, with probability given by where it
+falls. The mean is exact, and the stair-stepping a wide shallow gradient would
+otherwise show is broken up — longest identical run along a gradient drops from
+48 to 11 pixels in 8 bpc.
+
+Two properties matter more than the noise shaping:
+
+* **A representable value cannot move.** The usual ±1 LSB triangular dither
+  rounds an exact zero up a quarter of the time. With expanded bounds most of
+  the output buffer is untouched black, so that lit 12% of it to code value 1 —
+  and because one dither value is shared by all three channels, the pixels that
+  fired came out neutral: white speckle scattered around the layer on an
+  otherwise black frame. Stochastic rounding leaves zero at zero.
+* **It is keyed to the layer, not to the buffer.** The expanded rect moves as a
+  layer's Position animates. A buffer-keyed pattern therefore reshuffles every
+  frame: moving the layer one pixel changed 60% of the output pixels, which
+  reads as a shimmer over the whole glow. Keyed to source pixels it is 1.3%, all
+  of it ±1 LSB at the buffer edges.
+
+`TestDitherIsQuietAndStill` covers both.
 
 ## After Effects integration
 

@@ -195,12 +195,15 @@ inline float Hash01(std::uint32_t x, std::uint32_t y) {
     return static_cast<float>(h & 0xFFFFFFu) * (1.0f / 16777216.0f);
 }
 
-// Triangular dither of +-1 LSB: removes the stair-stepping a wide glow would
-// otherwise show in 8 bpc.
+// Stochastic rounding: a sample lands on one of the two levels it sits between,
+// with probability given by where it falls, so the mean is exact and the
+// stair-stepping a wide glow would otherwise show in 8 bpc is broken up. A
+// value that is already representable - black, in particular - cannot move,
+// which the usual +-1 LSB triangular dither does not guarantee: it rounds an
+// exact zero up a quarter of the time, filling the expanded bounds with neutral
+// speckle on an otherwise black frame.
 inline float DitherOffset(int x, int y) {
-    const float r1 = Hash01(static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(y));
-    const float r2 = Hash01(static_cast<std::uint32_t>(x) + 0x9E3779B9u, static_cast<std::uint32_t>(y) + 0x85EBCA6Bu);
-    return r1 + r2 - 1.0f;
+    return Hash01(static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(y)) - 0.5f;
 }
 
 // Reconstruction filter for the final upsample out of the pyramid. Bilinear is
@@ -441,7 +444,10 @@ void CompositeRows(const HostImage& source, int offset_x, int offset_y, const Im
             if constexpr (kDstDepth == PixelDepth::kFloat32) {
                 static_cast<PixelF*>(dst_row)[x] = encoded;
             } else {
-                const float dither = ctx.dither ? DitherOffset(x, y) : 0.0f;
+                // Keyed to source pixels, not to the output buffer: the
+                // expanded rect moves with the layer, so a buffer-keyed pattern
+                // would crawl over the image as the position animates.
+                const float dither = ctx.dither ? DitherOffset(x + offset_x, y + offset_y) : 0.0f;
                 if constexpr (kDstDepth == PixelDepth::kBits8) {
                     StorePixel8(dst_row, x, encoded, dither);
                 } else {
