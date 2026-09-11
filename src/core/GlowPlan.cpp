@@ -82,7 +82,19 @@ int MinimumBaseScale(int width, int height, Quality quality) {
     return scale;
 }
 
-GlowPlan MakeGlowPlan(float sigma, Quality quality, int min_base_scale) {
+int MaximumBaseScale(float sigma, int layer_width, int layer_height) {
+    // Level 0 keeps at least this many pixels on its short side, so the widest
+    // octave is still resolved instead of degenerating into edge clamping.
+    constexpr int kMinLevelExtent = 48;
+    // The pyramid covers the layer plus the glow's reach on each side. Using an
+    // approximation of the reach here keeps the limit non-circular; it only has
+    // to be proportional, not exact.
+    const float working =
+        static_cast<float>(std::max(1, std::min(layer_width, layer_height))) + 9.0f * std::max(sigma, 0.0f);
+    return std::clamp(static_cast<int>(working / static_cast<float>(kMinLevelExtent)), 1, kMaxBaseScale);
+}
+
+GlowPlan MakeGlowPlan(float sigma, Quality quality, int layer_width, int layer_height, int min_base_scale) {
     GlowPlan plan;
 
     // Pick the pyramid step so the centre rung lands on the requested sigma with
@@ -94,7 +106,11 @@ GlowPlan MakeGlowPlan(float sigma, Quality quality, int min_base_scale) {
     const float nominal = sigma / spread;
     const float desired = target * CascadeFactor(kCentreRung);
     const int wanted = static_cast<int>(std::lround(nominal / desired));
-    plan.base_scale = std::clamp(std::max(wanted, std::max(min_base_scale, 1)), 1, kMaxBaseScale);
+    // The memory floor outranks the resolution ceiling: running out of memory
+    // is worse than a coarse top octave.
+    const int floor_scale = std::max(min_base_scale, 1);
+    const int ceiling_scale = std::max(MaximumBaseScale(sigma, layer_width, layer_height), floor_scale);
+    plan.base_scale = std::clamp(std::max(wanted, floor_scale), 1, ceiling_scale);
 
     const float sigma0 = std::max(0.35f, nominal / static_cast<float>(plan.base_scale));
 

@@ -42,11 +42,16 @@ PF_LRect Inflate(const PF_LRect& rect, A_long amount) {
     return out;
 }
 
-A_long BoundsExpansion(const GlowSettings& settings, bool expand_bounds) {
+// `layer_width`/`layer_height` are the layer's size in render pixels. The plan
+// depends on them, so pre-render and render must be given the same ones or the
+// bounds would describe a glow the render does not produce.
+A_long BoundsExpansion(const GlowSettings& settings, bool expand_bounds, A_long layer_width,
+                       A_long layer_height) {
     if (!expand_bounds) return 0;
     if (settings.intensity <= 0.0f) return 0;
     const float sigma = RadiusToSigma(std::max(settings.radius_x, settings.radius_y));
-    const GlowPlan plan = MakeGlowPlan(sigma, settings.quality);
+    const GlowPlan plan = MakeGlowPlan(sigma, settings.quality, static_cast<int>(layer_width),
+                                       static_cast<int>(layer_height));
     const float reach = plan.Reach();
     if (!(reach > 0.0f)) return 0;
     return std::min<A_long>(kMaxBoundsExpansion, static_cast<A_long>(std::ceil(reach)));
@@ -131,7 +136,7 @@ PF_Err SmartPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtr
         return PF_Err_NONE;
     }
 
-    const A_long expansion = BoundsExpansion(params.settings, params.expand_bounds);
+    const A_long expansion = BoundsExpansion(params.settings, params.expand_bounds, in_data->width, in_data->height);
     const PF_LRect output_rect = Inflate(layer_rect, expansion);
 
     // The glow needs the whole layer, so ask for all of it and always render the
@@ -206,7 +211,7 @@ PF_Err LegacyFrameSetup(PF_InData* in_data, PF_OutData* out_data) {
     ERR(ReadParams(in_data, out_data, &params));
     if (err) return err;
 
-    const A_long expansion = BoundsExpansion(params.settings, params.expand_bounds);
+    const A_long expansion = BoundsExpansion(params.settings, params.expand_bounds, in_data->width, in_data->height);
     out_data->width = in_data->width + 2 * expansion;
     out_data->height = in_data->height + 2 * expansion;
     out_data->origin.h = static_cast<A_short>(expansion);

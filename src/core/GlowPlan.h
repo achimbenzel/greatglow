@@ -5,7 +5,7 @@ namespace abglow {
 enum class Quality { kDraft = 0, kNormal = 1, kHigh = 2, kBest = 3 };
 
 constexpr int kMaxPyramidLevels = 10;
-constexpr int kMaxBaseScale = 24;
+constexpr int kMaxBaseScale = 128;
 
 // Multi-scale plan: the glow kernel is a weighted sum of Gaussians, one per
 // pyramid octave, which gives a bright core with a long smooth tail and keeps
@@ -29,7 +29,13 @@ struct GlowPlan {
 // what keeps a 4K render from allocating hundreds of megabytes per frame.
 int MinimumBaseScale(int width, int height, Quality quality);
 
-// `sigma` is the target glow sigma in render-resolution pixels.
-GlowPlan MakeGlowPlan(float sigma, Quality quality, int min_base_scale = 1);
+// Largest pyramid step that still leaves the top of the ladder resolved, for a
+// glow of `sigma` over a layer of this size. Derived from the working buffer
+// rather than fixed, so it scales with the render resolution.
+int MaximumBaseScale(float sigma, int layer_width, int layer_height);
+
+// `sigma` is the target glow sigma in render-resolution pixels; the layer size
+// is in the same pixels.
+GlowPlan MakeGlowPlan(float sigma, Quality quality, int layer_width, int layer_height, int min_base_scale = 1);
 
 }  // namespace abglow

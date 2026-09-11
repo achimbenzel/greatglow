@@ -89,7 +89,13 @@ visible defect before it was fixed.
 
 **A fixed centre rung.** The requested σ is placed on rung 2 of the ladder by
 solving for `σ_level`, and the pyramid step (`base_scale`) is any integer — not
-a power of two — chosen to put it there. The mixture's weights depend only on
+a power of two — chosen to put it there. Its ceiling has to be derived from the
+working buffer rather than fixed, for the same reason: a constant cap binds at
+Full and not at Quarter, and binds for Draft and not for Best, so the step stops
+tracking what was asked for and the ladder grows an extra rung to compensate.
+That put 7.4% between the four Quality settings at radius 700, and left Full and
+Quarter building different ladders for the same glow. Tied to the buffer, both
+stay within 3% at every radius and the ladder is four rungs throughout. The mixture's weights depend only on
 the ratios `CascadeFactor(i) / CascadeFactor(centre)`, so fixing the rung fixes
 the shape of the kernel; only the grid it is sampled on changes. The rung moves
 only when `base_scale` has hit a limit — a tiny radius, a huge one, or the
@@ -104,12 +110,12 @@ pixels, so a coarse pyramid would come out wider; `kResamplingVariance` takes
 that back off the requested σ. Measured 50% width of the same glow across the
 four Quality settings:
 
-| Radius | Draft | Normal | High | Best |
-|--------|-------|--------|------|------|
-| 100 | 45.6 | 46.7 | 46.5 | 46.1 |
-| 400 | 167.9 | 165.6 | 165.7 | 165.4 |
-
-— 2.4% and 1.5% spread. It also makes the bounds expansion independent of
+| Radius | Draft | Normal | High | Best | spread |
+|--------|-------|--------|------|------|--------|
+| 100 | 44.6 | 44.4 | 44.7 | 44.2 | 1.0% |
+| 352 | 141.4 | 144.0 | 144.2 | 145.2 | 2.7% |
+| 700 | 289.1 | 292.8 | 297.2 | 291.9 | 2.8% |
+| 1500 | 717.4 | 712.8 | 723.7 | 716.9 | 1.5% | It also makes the bounds expansion independent of
 Quality, so switching it does not re-render the whole comp's geometry.
 
 **Every source pixel reaches the pyramid.** Level-0 columns whose block only

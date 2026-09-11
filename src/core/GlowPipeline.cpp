@@ -565,7 +565,8 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
     const float sigma = std::max(sigma_x, sigma_y);
 
     const int min_scale = MinimumBaseScale(render.dest.width, render.dest.height, settings.quality);
-    const GlowPlan plan = MakeGlowPlan(sigma, settings.quality, min_scale);
+    const GlowPlan plan =
+        MakeGlowPlan(sigma, settings.quality, render.source.width, render.source.height, min_scale);
     const int scale = plan.base_scale;
 
     const PixelPoint grid_start{GridStart(render.source_offset_x, scale),

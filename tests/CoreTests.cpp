@@ -67,9 +67,11 @@ float TotalEnergy(const TestImage& image) {
 }
 
 void TestPlanSanity() {
+    const int layer_w = 1920;
+    const int layer_h = 1080;
     for (float radius : {0.5f, 2.0f, 8.0f, 40.0f, 200.0f, 1000.0f}) {
         const float sigma = abglow::RadiusToSigma(radius);
-        const abglow::GlowPlan plan = abglow::MakeGlowPlan(sigma, Quality::kNormal);
+        const abglow::GlowPlan plan = abglow::MakeGlowPlan(sigma, Quality::kNormal, layer_w, layer_h);
         float sum = 0.0f;
         for (int i = 0; i < plan.level_count; ++i) sum += plan.weights[i];
         CheckNear(sum, 1.0f, 1e-4f, "plan weights normalise at radius " + std::to_string(radius));
@@ -79,7 +81,7 @@ void TestPlanSanity() {
 
     float previous = 0.0f;
     for (float radius = 1.0f; radius <= 400.0f; radius *= 1.3f) {
-        const abglow::GlowPlan plan = abglow::MakeGlowPlan(abglow::RadiusToSigma(radius), Quality::kNormal);
+        const abglow::GlowPlan plan = abglow::MakeGlowPlan(abglow::RadiusToSigma(radius), Quality::kNormal, layer_w, layer_h);
         const float sigma = plan.EffectiveSigma();
         Check(sigma > previous, "effective sigma grows with radius");
         previous = sigma;
@@ -195,9 +197,9 @@ void TestNoUpsampleCreases() {
         Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
               "crease render succeeds");
 
-        const abglow::GlowPlan plan = abglow::MakeGlowPlan(
-            abglow::RadiusToSigma(settings.radius_x), quality,
-            abglow::MinimumBaseScale(width, height, quality));
+        const abglow::GlowPlan plan =
+            abglow::MakeGlowPlan(abglow::RadiusToSigma(settings.radius_x), quality, width, height,
+                                 abglow::MinimumBaseScale(width, height, quality));
         const int cell = plan.base_scale;
         if (cell < 2) continue;
 
@@ -265,7 +267,7 @@ void TestGlowDoesNotSlideWithRadius() {
 
     for (float radius = 200.0f; radius <= 240.0f; radius += 4.0f) {
         const float sigma = abglow::RadiusToSigma(radius);
-        const int expansion = static_cast<int>(std::ceil(abglow::MakeGlowPlan(sigma, Quality::kNormal).Reach()));
+        const int expansion = static_cast<int>(std::ceil(abglow::MakeGlowPlan(sigma, Quality::kNormal, layer_w, layer_h).Reach()));
         const int dest_w = layer_w + 2 * expansion;
         const int dest_h = layer_h + 2 * expansion;
 
@@ -311,9 +313,10 @@ void TestSizeIsResolutionIndependent() {
     for (int den : {1, 2, 3, 4}) {
         const float radius = radius_comp / static_cast<float>(den);
         const float sigma = abglow::RadiusToSigma(radius);
-        const int expansion = static_cast<int>(std::ceil(abglow::MakeGlowPlan(sigma, Quality::kNormal).Reach()));
         const int layer_w = layer_w_comp / den;
         const int layer_h = layer_h_comp / den;
+        const int expansion = static_cast<int>(
+            std::ceil(abglow::MakeGlowPlan(sigma, Quality::kNormal, layer_w, layer_h).Reach()));
         const int dest_w = layer_w + 2 * expansion;
         const int dest_h = layer_h + 2 * expansion;
 
@@ -419,7 +422,7 @@ void TestDitherIsQuietAndStill() {
     const int layer_h = 100;
     const float radius = 120.0f;
     const int expansion = static_cast<int>(
-        std::ceil(abglow::MakeGlowPlan(abglow::RadiusToSigma(radius), Quality::kNormal).Reach()));
+        std::ceil(abglow::MakeGlowPlan(abglow::RadiusToSigma(radius), Quality::kNormal, layer_w, layer_h).Reach()));
 
     TestImage source(layer_w, layer_h, PixelDepth::kBits8);
     for (int y = 15; y < layer_h - 15; ++y) {
