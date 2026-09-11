@@ -156,6 +156,12 @@ inline float DitherOffset(int x, int y) {
     return r1 + r2 - 1.0f;
 }
 
+// Reconstruction filter for the final upsample out of the pyramid. Bilinear is
+// deliberately not offered: it leaves a kink every `base_scale` pixels, which
+// reads as concentric rings in a wide, faint glow. Both B-splines have a
+// continuous first derivative, so the tail stays smooth.
+enum class UpsampleFilter { kQuadratic, kCubic };
+
 // Upsampling taps for one axis. Precomputing them keeps clamping and weight
 // math out of the composite's inner loop.
 struct AxisTaps {
@@ -163,18 +169,22 @@ struct AxisTaps {
     float weight[4] = {};
 };
 
-AxisTaps MakeTaps(float coordinate, int limit, bool smooth) {
+AxisTaps MakeTaps(float coordinate, int limit, UpsampleFilter filter) {
     AxisTaps taps;
-    const int base = static_cast<int>(std::floor(coordinate));
-    const float f = coordinate - static_cast<float>(base);
     auto clamp_index = [limit](int i) { return i < 0 ? 0 : (i >= limit ? limit - 1 : i); };
-    if (!smooth) {
-        taps.index[0] = clamp_index(base);
-        taps.index[1] = clamp_index(base + 1);
-        taps.weight[0] = 1.0f - f;
-        taps.weight[1] = f;
+
+    if (filter == UpsampleFilter::kQuadratic) {
+        const int centre = static_cast<int>(std::floor(coordinate + 0.5f));
+        const float f = coordinate - static_cast<float>(centre);
+        taps.weight[0] = 0.5f * (0.5f - f) * (0.5f - f);
+        taps.weight[1] = 0.75f - f * f;
+        taps.weight[2] = 0.5f * (0.5f + f) * (0.5f + f);
+        for (int i = 0; i < 3; ++i) taps.index[i] = clamp_index(centre - 1 + i);
         return taps;
     }
+
+    const int base = static_cast<int>(std::floor(coordinate));
+    const float f = coordinate - static_cast<float>(base);
     const float f2 = f * f;
     const float f3 = f2 * f;
     taps.weight[0] = (1.0f - 3.0f * f + 3.0f * f2 - f3) / 6.0f;
@@ -189,9 +199,9 @@ struct CompositeContext {
     CompositeMode mode = CompositeMode::kAdd;
     const TransferFunction* transfer = nullptr;
     bool dither = false;
-    bool smooth_upsample = false;
+    UpsampleFilter filter = UpsampleFilter::kQuadratic;
     int scale = 1;
-    int taps = 2;
+    int taps = 3;
     // Horizontal taps per destination column; identical for every row.
     const AxisTaps* columns = nullptr;
 };
@@ -308,8 +318,7 @@ void CompositeRows(const HostImage& source, int offset_x, int offset_y, const Im
         void* dst_row = dest.Row(y);
         const AxisTaps row_taps =
             ctx.scale == 1 ? AxisTaps()
-                           : MakeTaps((static_cast<float>(y) + 0.5f) * inv_scale - 0.5f, glow.height,
-                                      ctx.smooth_upsample);
+                           : MakeTaps((static_cast<float>(y) + 0.5f) * inv_scale - 0.5f, glow.height, ctx.filter);
         const int src_x_begin = src_row_valid ? std::max(0, -offset_x) : dest.width;
         const int src_x_end = src_row_valid ? std::min(dest.width, source.width - offset_x) : dest.width;
 
@@ -525,17 +534,17 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
     ctx.mode = settings.composite;
     ctx.transfer = &transfer;
     ctx.dither = settings.dither && render.dest.depth != PixelDepth::kFloat32;
-    ctx.smooth_upsample = settings.quality >= Quality::kHigh;
+    ctx.filter = settings.quality >= Quality::kHigh ? UpsampleFilter::kCubic : UpsampleFilter::kQuadratic;
     ctx.scale = scale;
 
     std::vector<AxisTaps> columns;
-    ctx.taps = ctx.smooth_upsample ? 4 : 2;
+    ctx.taps = ctx.filter == UpsampleFilter::kCubic ? 4 : 3;
     if (scale != 1) {
         const float inv_scale = 1.0f / static_cast<float>(scale);
         columns.resize(static_cast<std::size_t>(render.dest.width));
         for (int x = 0; x < render.dest.width; ++x) {
             columns[static_cast<std::size_t>(x)] =
-                MakeTaps((static_cast<float>(x) + 0.5f) * inv_scale - 0.5f, level0.width, ctx.smooth_upsample);
+                MakeTaps((static_cast<float>(x) + 0.5f) * inv_scale - 0.5f, level0.width, ctx.filter);
         }
         ctx.columns = columns.data();
     }

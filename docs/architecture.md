@@ -67,6 +67,14 @@ than a radius of 40.
 The collapse runs from the top down, each level being upsampled into the next
 finer one and added with its weight, so only one buffer per level is ever live.
 
+The octave ladder is carried until the envelope has decayed below about 1% of
+its peak. Stopping earlier is tempting — the extra levels are tiny — but it
+leaves a level with real weight sitting at the cut, and renormalising the
+remaining weights then shifts the glow's size whenever integer rounding moves
+the cut. That showed up as the same glow measuring differently at Full, Half
+and Third resolution; with the longer ladder the effective sigma agrees to
+within 1%.
+
 Measured falloff of a point source (from `abglow_preview`):
 
 | Radius | 50 % | 25 % | 10 % | 1 % |
@@ -84,6 +92,24 @@ Every filter in the chain is normalised, so the glow conserves the light it
 extracts: widening the radius spreads the same energy over more area and the
 glow dims, exactly as a real light source would. Exposure and Intensity are the
 controls for putting that brightness back.
+
+### Reconstruction
+
+The final upsample out of level 0 must have a continuous first derivative.
+Bilinear does not: it produces straight segments joined by a kink every
+`base_scale` pixels, and although the numerical error is tiny, the eye reads
+those kinks as concentric rings in a wide, faint glow. Measuring the curvature
+along a profile makes it obvious — per position within an 8-pixel cell:
+
+```
+bilinear         0.00001 0.00001 0.00001 0.37238 0.39404 0.00001 0.00001 0.00001
+quadratic spline 0.08180 0.08123 0.08555 0.09015 0.09499 0.10000 0.10391 0.10443
+```
+
+Draft and Normal use a quadratic B-spline (3 taps per axis, C¹), High and Best
+a cubic one (4 taps, C²). Cubic everywhere costs 50–75% more for no visible
+gain at the smaller pyramid steps those settings already use. `TestNoUpsampleCreases`
+keeps bilinear from creeping back in.
 
 ### Compositing
 
@@ -133,15 +159,22 @@ to 12 pixels in 8 bpc).
 
 4K (3840×2160), 4 cores, Normal quality, 8 bpc:
 
-| Radius | Before optimisation | Now |
-|--------|--------------------|-----|
-| 20 | 746 ms | 78 ms |
-| 100 | 113 ms | 72 ms |
-| 400 | 157 ms | 108 ms |
+| Radius | First working version | Now |
+|--------|----------------------|-----|
+| 20 | 746 ms | 128 ms |
+| 100 | 113 ms | 117 ms |
+| 400 | 157 ms | 111 ms |
 
 What mattered, in order: restructuring the blur so the tap loops vectorise
 (taps in the outer loop, pixels in the inner loop), giving level 0 a pixel
 budget so large frames start the pyramid lower, and precomputing the upsample
 taps per column instead of clamping inside the composite loop. Denormals are
 flushed for the duration of each pass, because the tail of a glow decays
-straight into the denormal range.
+straight into the denormal range. Part of that budget was then spent back on
+the smooth reconstruction filter above, which was worth it.
+
+The composite is now the bottleneck by a wide margin — 87 ms of the 117 ms at
+radius 100 — because it touches every output pixel with 9 filter taps plus the
+transfer functions. The obvious next step is to exploit the filter's
+separability with a small per-thread cache of horizontally filtered rows,
+turning 9 taps into roughly 5; worth doing if scrubbing ever feels slow.

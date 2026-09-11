@@ -99,7 +99,7 @@ Ship release builds from Visual Studio; mingw is for verification.
 | Saturation | 0 – 400 % (100 %) | Colour of the glow: 0 is white light, 100 % keeps the source colour, above that exaggerates it. |
 | Tint | colour (white) | Colour multiplied into the glow. |
 | Tint Amount | 0 – 100 % (0 %) | How much of the tint is mixed in. |
-| Quality | Draft / Normal / High / Best | Trades resolution of the diffusion pyramid and upsample filter against speed. |
+| Quality | Draft / Normal / High / Best | Trades the resolution of the diffusion pyramid, and the reconstruction filter used to scale it back up, against speed. |
 | Composite | Add / Screen / Glow Only | How the glow is combined with the source. Glow Only is useful for inspecting the glow or building your own composite. |
 | Working Space | Auto / Linear / sRGB | How to interpret the incoming pixels. Auto treats 32 bpc as linear and 8/16 bpc as sRGB, which matches the usual project setups. |
 | Expand Bounds | on | Let the glow spread past the layer's edges by growing the layer's bounds. |

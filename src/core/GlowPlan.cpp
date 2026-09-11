@@ -74,8 +74,11 @@ GlowPlan MakeGlowPlan(float sigma, Quality quality, int min_base_scale) {
     // Small radii must not be widened by the per-level blur.
     plan.level_sigma = std::min(plan.level_sigma, sigma0 / 1.155f);
 
-    // Include octaves up to ~1.5x the target so the envelope is not truncated.
-    const float top = 1.5f * sigma0 / (plan.level_sigma * 1.155f);
+    // Carry octaves until the envelope has decayed below ~1%. Stopping earlier
+    // would leave a level with real weight at the cut, and renormalising over
+    // the rest shifts the glow's size whenever integer rounding moves the cut -
+    // which made the same glow differ between render resolutions.
+    const float top = 5.5f * sigma0 / (plan.level_sigma * 1.155f);
     int levels = 1 + static_cast<int>(std::ceil(std::log2(std::max(1.0f, top))));
     plan.level_count = std::clamp(levels, 1, kMaxPyramidLevels);
 

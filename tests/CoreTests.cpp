@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -162,6 +163,62 @@ void TestRadialFalloff() {
     Check(monotonic, "radial profile decreases monotonically");
     Check(profile[0] > profile[40] * 2.0f, "glow has a concentrated core");
     Check(profile[200] > 0.0f, "glow keeps a soft tail");
+}
+
+// A bilinear upsample out of the pyramid leaves a kink every base_scale pixels,
+// which reads as concentric rings in a wide faint glow. Curvature must be
+// spread across the cell, not concentrated at its edges.
+void TestNoUpsampleCreases() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 1600;
+    const int height = 300;
+    TestImage source(width, height, PixelDepth::kFloat32);
+    TestImage dest(width, height, PixelDepth::kFloat32);
+    for (int y = height / 2 - 20; y < height / 2 + 20; ++y) {
+        for (int x = width / 2 - 60; x < width / 2 + 60; ++x) {
+            source.SetPixel(x, y, PixelF{1.0f, 3.0f, 3.0f, 3.0f});
+        }
+    }
+
+    GlowSettings settings = DefaultSettings();
+    settings.threshold = 0.0f;
+    settings.radius_x = settings.radius_y = 250.0f;
+    settings.composite = CompositeMode::kGlowOnly;
+
+    for (Quality quality : {Quality::kDraft, Quality::kNormal, Quality::kHigh, Quality::kBest}) {
+        settings.quality = quality;
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
+              "crease render succeeds");
+
+        const abglow::GlowPlan plan = abglow::MakeGlowPlan(
+            abglow::RadiusToSigma(settings.radius_x), quality,
+            abglow::MinimumBaseScale(width, height, quality));
+        const int cell = plan.base_scale;
+        if (cell < 2) continue;
+
+        std::vector<double> curvature(static_cast<std::size_t>(cell), 0.0);
+        for (int x = width / 2 + 80; x < width - 2; ++x) {
+            const double a = dest.GetPixel(x - 1, height / 2).g;
+            const double b = dest.GetPixel(x, height / 2).g;
+            const double c = dest.GetPixel(x + 1, height / 2).g;
+            const double value = b > 1e-9 ? b : 1e-9;
+            curvature[static_cast<std::size_t>(x % cell)] += std::fabs(a - 2.0 * b + c) / value;
+        }
+        double lowest = curvature[0];
+        double highest = curvature[0];
+        for (double entry : curvature) {
+            lowest = std::min(lowest, entry);
+            highest = std::max(highest, entry);
+        }
+        // Bilinear gives ratios in the thousands; a smooth filter stays near 1.
+        Check(highest <= lowest * 5.0, "upsample leaves no creases at quality " +
+                                           std::to_string(static_cast<int>(quality)));
+    }
 }
 
 void TestThresholdAndPassThrough() {
@@ -417,6 +474,7 @@ int main() {
     TestTransferRoundTrip();
     TestEnergyConservation();
     TestRadialFalloff();
+    TestNoUpsampleCreases();
     TestThresholdAndPassThrough();
     TestTransparentInput();
     TestHdrNotClamped();
