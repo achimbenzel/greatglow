@@ -1,5 +1,6 @@
 #include "AbGlowParams.h"
 
+#include "AbGlow.h"
 #include "AeAdapters.h"
 
 #include <algorithm>
@@ -28,7 +29,9 @@ enum ParamId {
     kIdComposite,
     kIdWorkingSpace,
     kIdExpandBounds,
-    kIdRenderGroupEnd
+    kIdRenderGroupEnd,
+    kIdAboutGroup,
+    kIdAboutGroupEnd
 };
 
 constexpr char kQualityChoices[] = "Draft|Normal|High|Best";
@@ -165,6 +168,14 @@ PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data) {
 
     AEFX_CLR_STRUCT(def);
     PF_END_TOPIC(kIdRenderGroupEnd);
+
+    // An empty group whose header is the build. Nothing to configure; it is
+    // there so the loaded build can be identified without leaving the panel.
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPICX("v" AB_GLOW_VERSION_STRING " (" AB_GLOW_BUILD_ID ")", 0, kIdAboutGroup);
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kIdAboutGroupEnd);
 
     out_data->num_params = kParamCount;
     return PF_Err_NONE;

@@ -15,8 +15,8 @@ static_assert(AB_GLOW_OUT_FLAGS2 == (PF_OutFlag2_SUPPORTS_SMART_RENDER | PF_OutF
 namespace {
 
 PF_Err About(PF_InData* in_data, PF_OutData* out_data) {
-    PF_SPRINTF(out_data->return_msg, "%s v%d.%d\r%s", AB_GLOW_NAME, AB_GLOW_VERSION_MAJOR, AB_GLOW_VERSION_MINOR,
-               AB_GLOW_DESCRIPTION);
+    PF_SPRINTF(out_data->return_msg, "%s v%s (%s)\r%s", AB_GLOW_NAME, AB_GLOW_VERSION_STRING,
+               AB_GLOW_BUILD_ID, AB_GLOW_DESCRIPTION);
     (void)in_data;
     return PF_Err_NONE;
 }

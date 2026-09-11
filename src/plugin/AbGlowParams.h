@@ -26,6 +26,8 @@ enum ParamIndex {
     kParamWorkingSpace,
     kParamExpandBounds,
     kParamRenderGroupEnd,
+    kParamAboutGroupStart,
+    kParamAboutGroupEnd,
     kParamCount
 };
 

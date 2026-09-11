@@ -73,6 +73,17 @@ C:\Program Files\Adobe\Adobe After Effects <version>\Support Files\Plug-ins\
 
 Restart After Effects; the effect appears under **Effect ▸ AB Tools ▸ AB Glow**.
 
+Pick **one** of those two folders. After Effects scans both, so a copy left in
+the other one can be the copy it loads, and replacing the file you were
+thinking of changes nothing. The effect's parameters end with a group named
+after the build it came from (`v1.1.0 (abc1234)`), so the loaded build can be
+read straight off the panel. To find every copy on the machine:
+
+```powershell
+Get-ChildItem C:\ -Filter AbGlow.aex -Recurse -ErrorAction SilentlyContinue |
+    Select-Object FullName, Length, LastWriteTime
+```
+
 ### Cross-compiling from Linux (verification only)
 
 The Windows binary can be built and smoke tested on Linux, which is how CI

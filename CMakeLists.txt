@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(AbGlow VERSION 1.0.0 LANGUAGES CXX)
+project(AbGlow VERSION 1.1.0 LANGUAGES CXX)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -62,6 +62,22 @@ if(ABGLOW_BUILD_PLUGIN)
     find_package(AfterEffectsSDK REQUIRED)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
+    # Stamped into the plug-in's UI so the loaded build can be identified.
+    set(ABGLOW_BUILD_ID "local")
+    find_package(Git QUIET)
+    if(GIT_EXECUTABLE)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" rev-parse --short=7 HEAD
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _abglow_git_sha
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        if(_abglow_git_sha)
+            set(ABGLOW_BUILD_ID "${_abglow_git_sha}")
+        endif()
+    endif()
+    message(STATUS "AB Glow build id: ${ABGLOW_BUILD_ID}")
+
     set(ABGLOW_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
     set(ABGLOW_PIPL_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_pipl.py")
 
@@ -96,6 +112,7 @@ if(ABGLOW_BUILD_PLUGIN)
         "${CMAKE_CURRENT_SOURCE_DIR}/src/plugin"
         "${ABGLOW_GENERATED_DIR}")
     target_include_directories(AbGlow SYSTEM PRIVATE ${AE_SDK_INCLUDE_DIRS})
+    target_compile_definitions(AbGlow PRIVATE AB_GLOW_BUILD_ID="${ABGLOW_BUILD_ID}")
 
     set_target_properties(AbGlow PROPERTIES
         PREFIX ""

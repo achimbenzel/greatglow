@@ -77,6 +77,11 @@ things only the real host can tell you.
 14. **Stability.** Apply and remove the effect 20 times, undo/redo, duplicate
     the layer, save and reopen the project. Watch memory in Task Manager for
     growth that does not come back.
-15. **Colour.** Compare *Working Space: Auto* against *Linear* and *sRGB* on the
+15. **The right build.** The parameter list ends with a group named after the
+    build (`v1.1.0 (abc1234)`). Check it matches what was just installed before
+    trusting any of the above — After Effects scans both the application's
+    `Plug-ins` folder and `Common\Plug-ins\7.0\MediaCore`, and a stale copy in
+    the other one will be loaded instead.
+16. **Colour.** Compare *Working Space: Auto* against *Linear* and *sRGB* on the
     same footage; Auto should match Linear in a 32 bpc linearised project and
     sRGB in an 8 bpc one.
