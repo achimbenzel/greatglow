@@ -5,6 +5,7 @@ namespace abglow {
 enum class Quality { kDraft = 0, kNormal = 1, kHigh = 2, kBest = 3 };
 
 constexpr int kMaxPyramidLevels = 10;
+constexpr int kMaxBaseScale = 24;
 
 // Multi-scale plan: the glow kernel is a weighted sum of Gaussians, one per
 // pyramid octave, which gives a bright core with a long smooth tail and keeps

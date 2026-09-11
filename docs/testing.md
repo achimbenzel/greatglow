@@ -60,11 +60,15 @@ things only the real host can tell you.
 8. **Bounds.** With *Expand Bounds* on, the glow spills past the layer's edges;
    with it off, it stops at them.
 9. **Resolutions.** Full / Half / Quarter, and a region of interest. The glow
-   must stay the same size in comp space at every resolution.
+   must stay the same size in comp space at every resolution. Compare at a fixed
+   viewer zoom, or render the frames to disk — After Effects upscales a
+   reduced-resolution render for display, so a different zoom per screenshot
+   makes any effect look different.
 10. **Non-square pixels.** A comp with a 1.46 pixel aspect: the glow must stay
     round.
 11. **Animation.** Keyframe Radius, Threshold and Intensity; render the range
-    and check for popping between frames.
+    and check for popping between frames, and that the glow does not drift
+    sideways as the radius grows.
 12. **Motion blur and 3D.** Enable motion blur on a moving layer and confirm the
     glow is blurred with it (After Effects renders the layer per sample; the
     effect needs no special handling).

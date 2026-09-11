@@ -92,7 +92,9 @@ BlurKernel BlurKernel::Gaussian(float sigma, int max_radius) {
         kernel.weights[0] = 1.0f;
         return kernel;
     }
-    const int radius = std::min(max_radius, std::max(1, static_cast<int>(std::ceil(sigma * 3.0f))));
+    // Truncating at 4 sigma keeps the discarded weight near 0.006%, so the
+    // realised blur matches the requested sigma whatever the ceil() lands on.
+    const int radius = std::min(max_radius, std::max(1, static_cast<int>(std::ceil(sigma * 4.0f))));
     kernel.radius = radius;
     const float inv_two_sigma_sq = 1.0f / (2.0f * sigma * sigma);
     float sum = 0.0f;

@@ -20,8 +20,8 @@ source ─► highlight extraction (soft knee, linear light)
 * 8, 16 and 32 bits per channel, with all internal maths in 32-bit float
 * HDR safe: values above 1.0 are never clamped in 32 bpc
 * SmartFX, multi-frame rendering, host memory and the host thread pool
-* Cost stays nearly flat as the radius grows (radius 400 is not slower than
-  radius 20 at 4K)
+* Cost stays nearly flat as the radius grows — at 4K a radius of 1000 renders
+  faster than a radius of 20, because a wide glow is built on a coarser pyramid
 
 ## Layout
 
@@ -99,14 +99,16 @@ Ship release builds from Visual Studio; mingw is for verification.
 | Saturation | 0 – 400 % (100 %) | Colour of the glow: 0 is white light, 100 % keeps the source colour, above that exaggerates it. |
 | Tint | colour (white) | Colour multiplied into the glow. |
 | Tint Amount | 0 – 100 % (0 %) | How much of the tint is mixed in. |
-| Quality | Draft / Normal / High / Best | Trades the resolution of the diffusion pyramid, and the reconstruction filter used to scale it back up, against speed. |
+| Quality | Draft / Normal / High / Best | Trades the resolution of the diffusion pyramid, and the reconstruction filter used to scale it back up, against speed. It changes how finely the glow is resolved, not its size or shape — measured spread across the four settings is under 2.5%. |
 | Composite | Add / Screen / Glow Only | How the glow is combined with the source. Glow Only is useful for inspecting the glow or building your own composite. |
 | Working Space | Auto / Linear / sRGB | How to interpret the incoming pixels. Auto treats 32 bpc as linear and 8/16 bpc as sRGB, which matches the usual project setups. |
 | Expand Bounds | on | Let the glow spread past the layer's edges by growing the layer's bounds. |
 
 Radius is in full-resolution pixels: it is scaled automatically for draft
 resolutions and for non-square pixels, so a glow stays round and the same size
-at Half or Quarter resolution.
+at Half or Quarter resolution — measured spread across Full / Half / Third /
+Quarter is 0.8%. Comparing resolutions in the viewer needs a fixed zoom, since
+After Effects upscales a reduced-resolution render for display.
 
 ## Testing
 

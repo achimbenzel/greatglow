@@ -57,34 +57,101 @@ level 1 ── blur σ ──┬────────────────
 level 2 ── blur σ ──┬─────────────────────────── w₂ …
 ```
 
-Because the blurs cascade, level *i* carries an effective σ of about
-`σ_level · 1.155 · 2ⁱ`. The weights follow a log-normal envelope centred on the
-requested σ, one octave wide either side, so the result is a smooth mixture:
+Because the blurs cascade, level *i* carries an effective σ of
+`σ_level · sqrt((4ⁱ⁺¹−1)/3)` in level-0 pixels — asymptotically `1.155 · 2ⁱ`,
+but noticeably smaller on the first few rungs, which is why the exact form is
+used. The weights follow a log-normal envelope centred on the requested σ, so
 the narrow octaves build the bright core and the wide ones the long tail. The
-octave ladder is what keeps large radii cheap — a radius of 400 costs no more
-than a radius of 40.
+ladder is what keeps large radii cheap: a radius of 400 costs no more than a
+radius of 40.
 
 The collapse runs from the top down, each level being upsampled into the next
 finer one and added with its weight, so only one buffer per level is ever live.
 
-The octave ladder is carried until the envelope has decayed below about 1% of
-its peak. Stopping earlier is tempting — the extra levels are tiny — but it
-leaves a level with real weight sitting at the cut, and renormalising the
-remaining weights then shifts the glow's size whenever integer rounding moves
-the cut. That showed up as the same glow measuring differently at Full, Half
-and Third resolution; with the longer ladder the effective sigma agrees to
-within 1%.
+### Keeping the kernel the same shape everywhere
 
-Measured falloff of a point source (from `abglow_preview`):
+The same glow has to measure the same size whether the user is at Full, Half or
+Quarter resolution, whichever Quality they picked, and it has to stay put while
+the Radius is animated. Several things make that true, and each of them was a
+visible defect before it was fixed.
+
+**A fixed centre rung.** The requested σ is placed on rung 2 of the ladder by
+solving for `σ_level`, and the pyramid step (`base_scale`) is any integer — not
+a power of two — chosen to put it there. The mixture's weights depend only on
+the ratios `CascadeFactor(i) / CascadeFactor(centre)`, so fixing the rung fixes
+the shape of the kernel; only the grid it is sampled on changes. The rung moves
+only when `base_scale` has hit a limit — a tiny radius, a huge one, or the
+level-0 pixel budget.
+
+**Quality changes the grid, not the glow.** `TargetLevelSigma` is the per-level
+blur in level pixels: 1.3 / 1.8 / 2.3 / 2.8 for Draft / Normal / High / Best. A
+larger value means a finer pyramid for the same glow, so Best resolves more
+structure and costs more, while the rung — and therefore the kernel — is the
+same. The resampling filters do add blur of their own, a fixed amount in level
+pixels, so a coarse pyramid would come out wider; `kResamplingVariance` takes
+that back off the requested σ. Measured 50% width of the same glow across the
+four Quality settings:
+
+| Radius | Draft | Normal | High | Best |
+|--------|-------|--------|------|------|
+| 100 | 45.6 | 46.7 | 46.5 | 46.1 |
+| 400 | 167.9 | 165.6 | 165.7 | 165.4 |
+
+— 2.4% and 1.5% spread. It also makes the bounds expansion independent of
+Quality, so switching it does not re-render the whole comp's geometry.
+
+**Every source pixel reaches the pyramid.** Level-0 columns whose block only
+partly overlapped the source used to be dropped, which threw away up to
+`base_scale − 1` columns of the layer's right and bottom edge. That moved the
+layer's centre of mass, so the glow jumped sideways by several pixels whenever
+the radius changed `base_scale` — ±3 px over a radius animation from 200 to 240
+— and made the same glow a different size at different resolutions. Partial
+blocks are now summed over the samples that exist and divided by the full block
+area, which is ordinary box filtering and preserves both energy and centroid.
+
+**A grid anchored to the source.** Level 0 used to start at the corner of the
+expanded output buffer, and that corner moves as the radius grows. Whenever
+`expansion % base_scale` changed, the whole pyramid shifted by up to half a
+level pixel. The grid is now anchored to source pixels (`GridStart`), so a given
+source pixel always falls in the same place within its level-0 block.
+
+With both of those fixed, the centroid moves 0.05 px over a radius sweep from
+200 to 240 on a layer whose width is not a multiple of any pyramid step; before,
+it jittered over ±3 px frame to frame. `TestGlowDoesNotSlideWithRadius` locks
+it in.
+
+**Kernels that are actually the σ they claim.** The Gaussian is truncated at 4σ
+rather than 3σ: the discarded weight drops from 1.1% to 0.006%, and the realised
+σ from up to 0.9% narrower than requested to 0.03%, so `ceil()` landing one tap
+either way no longer matters. The expanded bounds reach out 3.6·σ_effective
+(≈1.43·Radius), which leaves the 1% point of the profile at 73% of the reach —
+at 3.0 it fell outside the buffer at Third resolution and was clipped flat.
+
+Measured width of the same comp-space glow rendered at each AE resolution, in
+comp pixels (`TestSizeIsResolutionIndependent` asserts 2%):
+
+| | Full | Half | Third | Quarter |
+|-|------|------|-------|---------|
+| 50% | 394.6 | 394.6 | 392.1 | 395.3 |
+| 10% | 795.7 | 795.8 | 791.9 | 798.5 |
+| 1% | 1443.7 | 1443.7 | 1438.8 | 1450.8 |
+
+0.8% spread, against 2.5% before these fixes.
+
+Measured falloff of a point source (from `abglow_preview`, half-width at each
+fraction of the peak):
 
 | Radius | 50 % | 25 % | 10 % | 1 % |
 |--------|------|------|------|-----|
-| 25 | 6 px | 9 px | 14 px | 28 px |
-| 100 | 21 px | 35 px | 53 px | 109 px |
-| 400 | 85 px | 141 px | 214 px | 438 px |
+| 25 | 5 px | 8 px | 13 px | 26 px |
+| 100 | 20 px | 34 px | 53 px | 105 px |
+| 400 | 81 px | 134 px | 211 px | 419 px |
 
 so the Radius control reads as "where the glow ends", and the profile keeps a
-tight core (half brightness at a fifth of the radius) with a long tail.
+tight core (half brightness at a fifth of the radius) with a long tail. The
+numbers are half-widths of a symmetric profile; measuring outward from the peak
+instead makes them depend on where the source pixel sits inside its level-0
+block, which is a property of the measurement and not of the glow.
 
 ### Energy
 
@@ -108,8 +175,16 @@ quadratic spline 0.08180 0.08123 0.08555 0.09015 0.09499 0.10000 0.10391 0.10443
 
 Draft and Normal use a quadratic B-spline (3 taps per axis, C¹), High and Best
 a cubic one (4 taps, C²). Cubic everywhere costs 50–75% more for no visible
-gain at the smaller pyramid steps those settings already use. `TestNoUpsampleCreases`
-keeps bilinear from creeping back in.
+gain at the smaller pyramid steps those settings already use.
+`TestNoUpsampleCreases` keeps bilinear from creeping back in: it bins the
+second difference along a profile by position within a level-0 cell and fails if
+the worst bin exceeds the best by 5×. Bilinear scores in the thousands; the
+B-splines stay between 1.0 and 1.3 even at a 24-pixel step.
+
+The filter is separable, and output rows share most of their vertical taps, so
+`GlowRowCache` filters each pyramid row horizontally once and keeps four of
+them. Per output pixel that is `taps` multiply-adds plus `taps/base_scale`,
+instead of `taps²`.
 
 ### Compositing
 
@@ -130,7 +205,7 @@ to 12 pixels in 8 bpc).
   float pixels at all, so it is the primary path. `PF_Cmd_RENDER` is still
   implemented for hosts that do not drive SmartFX.
 * **Pre-render** asks for the layer's extent with an empty request, computes the
-  glow's reach from the parameters at that time, and declares
+  glow's reach from the parameters at that time (3.6·σ_effective), and declares
   `result_rect = max_result_rect = layer ⊕ reach` together with
   `PF_RenderOutputFlag_RETURNS_EXTRA_PIXELS`. `max_result_rect` never depends on
   the requested region, which is what After Effects requires.
@@ -157,24 +232,32 @@ to 12 pixels in 8 bpc).
 
 ## Performance
 
-4K (3840×2160), 4 cores, Normal quality, 8 bpc:
+4K (3840×2160), 4 cores, 8 bpc, milliseconds — best of five renders:
 
-| Radius | First working version | Now |
-|--------|----------------------|-----|
-| 20 | 746 ms | 128 ms |
-| 100 | 113 ms | 117 ms |
-| 400 | 157 ms | 111 ms |
+| Radius | Draft | Normal | High | Best |
+|--------|-------|--------|------|------|
+| 20 | 279 | 287 | 733 | 681 |
+| 100 | 228 | 228 | 258 | 328 |
+| 400 | 219 | 214 | 222 | 222 |
+| 1000 | 210 | 207 | 208 | 210 |
+
+Cost is flat in the radius, which is the whole point of the octave ladder, and
+now rises with Quality rather than falling — the Quality control used to be
+wired backwards, so Best built a two-octave pyramid on a coarse grid: cheaper
+than Normal and a visibly different glow. Small radii are the expensive case,
+not large ones: `base_scale` shrinks with the radius, so level 0 is at or near
+full resolution and the level-0 blur dominates. The level-0 pixel budget is what
+stops that from also costing hundreds of megabytes (4 MP at Normal keeps a 4K
+frame near 80 MB).
 
 What mattered, in order: restructuring the blur so the tap loops vectorise
 (taps in the outer loop, pixels in the inner loop), giving level 0 a pixel
-budget so large frames start the pyramid lower, and precomputing the upsample
-taps per column instead of clamping inside the composite loop. Denormals are
-flushed for the duration of each pass, because the tail of a glow decays
-straight into the denormal range. Part of that budget was then spent back on
-the smooth reconstruction filter above, which was worth it.
+budget, precomputing the upsample taps per column instead of clamping inside the
+composite loop, and caching the horizontally filtered pyramid rows. Denormals
+are flushed for the duration of each pass, because the tail of a glow decays
+straight into the denormal range.
 
-The composite is now the bottleneck by a wide margin — 87 ms of the 117 ms at
-radius 100 — because it touches every output pixel with 9 filter taps plus the
-transfer functions. The obvious next step is to exploit the filter's
-separability with a small per-thread cache of horizontally filtered rows,
-turning 9 taps into roughly 5; worth doing if scrubbing ever feels slow.
+The composite is the bottleneck — it touches every output pixel of an expanded
+buffer with the reconstruction filter and the transfer functions — so the next
+thing worth trying is hand-written SIMD over four pixels at a time there, or the
+GPU path in `docs/gpu.md`.

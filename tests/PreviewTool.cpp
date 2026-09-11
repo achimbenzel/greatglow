@@ -1,5 +1,6 @@
 // Renders the reference test scene through the glow pipeline and writes PNGs so
 // the result can be judged by eye without After Effects.
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <string>
@@ -151,14 +152,26 @@ void ReportFalloff(MallocAllocator& allocator, abglow::TaskRunner& runner) {
         render.dest = dest.View();
         abglow::RenderGlow(settings, render, allocator, runner);
 
-        const float peak = dest.GetPixel(size / 2, size / 2).g;
+        // Measured left-to-right and halved, so a sub-pixel shift of the glow
+        // cancels instead of being read as a size change.
+        float peak = 0.0f;
+        for (int x = 0; x < size; ++x) peak = std::max(peak, dest.GetPixel(x, size / 2).g);
         float marks[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
         const float levels[4] = {0.5f, 0.25f, 0.1f, 0.01f};
-        for (int x = size / 2; x < size; ++x) {
-            const float value = dest.GetPixel(x, size / 2).g / peak;
-            for (int m = 0; m < 4; ++m) {
-                if (marks[m] < 0.0f && value <= levels[m]) marks[m] = static_cast<float>(x - size / 2);
+        for (int m = 0; m < 4; ++m) {
+            float left = -1.0f;
+            float right = -1.0f;
+            for (int x = 1; x < size; ++x) {
+                const float a = dest.GetPixel(x - 1, size / 2).g / peak;
+                const float b = dest.GetPixel(x, size / 2).g / peak;
+                if (left < 0.0f && a < levels[m] && b >= levels[m]) {
+                    left = static_cast<float>(x - 1) + (levels[m] - a) / (b - a);
+                }
+                if (left >= 0.0f && a >= levels[m] && b < levels[m]) {
+                    right = static_cast<float>(x - 1) + (a - levels[m]) / (a - b);
+                }
             }
+            if (left >= 0.0f && right >= 0.0f) marks[m] = (right - left) * 0.5f;
         }
         std::printf("%6.0f %6.1f %6.0f %6.0f %6.0f %6.0f\n", radius, abglow::RadiusToSigma(radius), marks[0],
                     marks[1], marks[2], marks[3]);

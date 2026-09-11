@@ -74,7 +74,7 @@ void TestPlanSanity() {
         for (int i = 0; i < plan.level_count; ++i) sum += plan.weights[i];
         CheckNear(sum, 1.0f, 1e-4f, "plan weights normalise at radius " + std::to_string(radius));
         Check(plan.level_count >= 1 && plan.level_count <= abglow::kMaxPyramidLevels, "plan level count in range");
-        Check(plan.base_scale >= 1 && plan.base_scale <= 8, "plan base scale in range");
+        Check(plan.base_scale >= 1 && plan.base_scale <= abglow::kMaxBaseScale, "plan base scale in range");
     }
 
     float previous = 0.0f;
@@ -219,6 +219,129 @@ void TestNoUpsampleCreases() {
         Check(highest <= lowest * 5.0, "upsample leaves no creases at quality " +
                                            std::to_string(static_cast<int>(quality)));
     }
+}
+
+// Width measured left-to-right, so a sub-pixel shift of the glow cancels out.
+float GlowWidth(const TestImage& image, int row, float level) {
+    float peak = 0.0f;
+    for (int x = 0; x < image.View().width; ++x) peak = std::max(peak, image.GetPixel(x, row).g);
+    if (peak <= 0.0f) return -1.0f;
+    float left = -1.0f;
+    float right = -1.0f;
+    for (int x = 1; x < image.View().width; ++x) {
+        const float a = image.GetPixel(x - 1, row).g / peak;
+        const float b = image.GetPixel(x, row).g / peak;
+        if (left < 0.0f && a < level && b >= level) left = static_cast<float>(x - 1) + (level - a) / (b - a);
+        if (left >= 0.0f && a >= level && b < level) right = static_cast<float>(x - 1) + (a - level) / (a - b);
+    }
+    return (left < 0.0f || right < 0.0f) ? -1.0f : right - left;
+}
+
+float GlowCentroid(const TestImage& image, int row) {
+    double mass = 0.0;
+    double moment = 0.0;
+    for (int x = 0; x < image.View().width; ++x) {
+        const double v = image.GetPixel(x, row).g;
+        mass += v;
+        moment += v * x;
+    }
+    return mass > 0.0 ? static_cast<float>(moment / mass) : -1.0f;
+}
+
+// The glow must not slide sideways as the radius animates. Two things used to
+// move it: the pyramid grid was anchored to the expanded destination rectangle,
+// whose corner moves with the radius, and the partially covered blocks at the
+// layer's far edge were dropped, which shifted the layer's centre of mass
+// whenever the radius changed the pyramid step. The layer size here is
+// deliberately not a multiple of any likely step.
+void TestGlowDoesNotSlideWithRadius() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int layer_w = 233;
+    const int layer_h = 79;
+    float previous = -1.0f;
+    float worst = 0.0f;
+
+    for (float radius = 200.0f; radius <= 240.0f; radius += 4.0f) {
+        const float sigma = abglow::RadiusToSigma(radius);
+        const int expansion = static_cast<int>(std::ceil(abglow::MakeGlowPlan(sigma, Quality::kNormal).Reach()));
+        const int dest_w = layer_w + 2 * expansion;
+        const int dest_h = layer_h + 2 * expansion;
+
+        TestImage source(layer_w, layer_h, PixelDepth::kFloat32);
+        TestImage dest(dest_w, dest_h, PixelDepth::kFloat32);
+        for (int y = 0; y < layer_h; ++y) {
+            for (int x = 0; x < layer_w; ++x) source.SetPixel(x, y, PixelF{1.0f, 1.0f, 1.0f, 1.0f});
+        }
+
+        GlowSettings settings = DefaultSettings();
+        settings.threshold = 0.0f;
+        settings.radius_x = settings.radius_y = radius;
+        settings.composite = CompositeMode::kGlowOnly;
+
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        render.source_offset_x = -expansion;
+        render.source_offset_y = -expansion;
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
+              "slide render succeeds");
+
+        // Centroid relative to the layer's own centre.
+        const float centre = GlowCentroid(dest, expansion + layer_h / 2) - (expansion + layer_w / 2.0f);
+        if (previous > -1000.0f && previous != -1.0f) worst = std::max(worst, std::fabs(centre - previous));
+        previous = centre;
+    }
+    Check(worst < 0.25f, "glow stays put as the radius animates");
+}
+
+// The same glow, rendered at each of After Effects' resolutions, must come out
+// the same size in composition space.
+void TestSizeIsResolutionIndependent() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const float radius_comp = 600.0f;
+    const int layer_w_comp = 320;
+    const int layer_h_comp = 120;
+    float widest = 0.0f;
+    float narrowest = 1e9f;
+
+    for (int den : {1, 2, 3, 4}) {
+        const float radius = radius_comp / static_cast<float>(den);
+        const float sigma = abglow::RadiusToSigma(radius);
+        const int expansion = static_cast<int>(std::ceil(abglow::MakeGlowPlan(sigma, Quality::kNormal).Reach()));
+        const int layer_w = layer_w_comp / den;
+        const int layer_h = layer_h_comp / den;
+        const int dest_w = layer_w + 2 * expansion;
+        const int dest_h = layer_h + 2 * expansion;
+
+        TestImage source(layer_w, layer_h, PixelDepth::kFloat32);
+        TestImage dest(dest_w, dest_h, PixelDepth::kFloat32);
+        for (int y = 0; y < layer_h; ++y) {
+            for (int x = 0; x < layer_w; ++x) source.SetPixel(x, y, PixelF{1.0f, 1.0f, 1.0f, 1.0f});
+        }
+
+        GlowSettings settings = DefaultSettings();
+        settings.threshold = 0.0f;
+        settings.radius_x = settings.radius_y = radius;
+        settings.composite = CompositeMode::kGlowOnly;
+
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        render.source_offset_x = -expansion;
+        render.source_offset_y = -expansion;
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
+              "resolution render succeeds");
+
+        const float width = GlowWidth(dest, expansion + layer_h / 2, 0.5f) * static_cast<float>(den);
+        Check(width > 0.0f, "glow fits inside the expanded bounds");
+        widest = std::max(widest, width);
+        narrowest = std::min(narrowest, width);
+    }
+    Check(widest <= narrowest * 1.02f, "glow is the same size at every render resolution");
 }
 
 void TestThresholdAndPassThrough() {
@@ -475,6 +598,8 @@ int main() {
     TestEnergyConservation();
     TestRadialFalloff();
     TestNoUpsampleCreases();
+    TestGlowDoesNotSlideWithRadius();
+    TestSizeIsResolutionIndependent();
     TestThresholdAndPassThrough();
     TestTransparentInput();
     TestHdrNotClamped();
