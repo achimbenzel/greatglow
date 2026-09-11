@@ -25,6 +25,7 @@ enum ParamIndex {
     kParamComposite,
     kParamWorkingSpace,
     kParamExpandBounds,
+    kParamRolloff,
     kParamRenderGroupEnd,
     kParamAboutGroupStart,
     kParamAboutGroupEnd,

@@ -226,6 +226,15 @@ untouched area of the frame is never altered by an encode/decode round trip.
 Alpha grows as `a + glow_a·(1 − a)`, clamped to 1, so the glow is visible where
 the layer was transparent without breaking premultiplication.
 
+Where the lit result leaves the output's range, **Highlight Rolloff** decides
+what happens. Clipping each channel independently reaches the ceiling at a
+different brightness per channel, so a saturated colour driven hard enough drags
+to white — a light red of (1, 0.08, 0.08) at 60x gain clips to (1, 1, 1). The
+default rolls the whole triple off together through a smooth shoulder above
+0.75, which leaves the ratios between channels — the hue — untouched: the same
+pixel comes out (1, 0.078, 0.078), the source's colour at full brightness. Float
+output keeps its HDR values and is never touched.
+
 For 8 and 16 bpc output the quantisation is stochastic: a sample lands on one
 of the two code values it sits between, with probability given by where it
 falls. The mean is exact, and the stair-stepping a wide shallow gradient would

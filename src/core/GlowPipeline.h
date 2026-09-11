@@ -10,6 +10,12 @@ namespace abglow {
 enum class CompositeMode { kAdd = 0, kScreen = 1, kGlowOnly = 2 };
 enum class WorkingSpace { kAuto = 0, kLinear = 1, kSrgb = 2 };
 
+// What to do when the lit result leaves the output's range. Clipping each
+// channel on its own drags a saturated colour towards white, because the
+// channels reach the ceiling at different brightnesses; rolling the triple off
+// together keeps the hue and just stops getting brighter.
+enum class HighlightRolloff { kPreserveHue = 0, kClip = 1 };
+
 struct GlowSettings {
     float threshold = 0.5f;          // linear luminance where the glow starts
     float threshold_softness = 0.4f;  // 0 = hard knee, 1 = very soft
@@ -25,6 +31,7 @@ struct GlowSettings {
     Quality quality = Quality::kNormal;
     CompositeMode composite = CompositeMode::kAdd;
     WorkingSpace working_space = WorkingSpace::kAuto;
+    HighlightRolloff rolloff = HighlightRolloff::kPreserveHue;
     bool dither = true;
 };
 

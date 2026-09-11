@@ -113,6 +113,7 @@ Ship release builds from Visual Studio; mingw is for verification.
 | Quality | Draft / Normal / High / Best | Trades the resolution of the diffusion pyramid, and the reconstruction filter used to scale it back up, against speed. It changes how finely the glow is resolved, not its size or shape — measured spread across the four settings is under 2.5%. |
 | Composite | Add / Screen / Glow Only | How the glow is combined with the source. Glow Only is useful for inspecting the glow or building your own composite. |
 | Working Space | Auto / Linear / sRGB | How to interpret the incoming pixels. Auto treats 32 bpc as linear and 8/16 bpc as sRGB, which matches the usual project setups. |
+| Highlight Rolloff | Preserve Hue / Clip | What to do where the glow leaves the output's range. Clipping each channel on its own reaches the ceiling at a different brightness per channel, so an over-driven saturated colour drifts to white; Preserve Hue rolls the whole triple off together and keeps the colour. 32 bpc output is never touched either way. |
 | Expand Bounds | on | Let the glow spread past the layer's edges by growing the layer's bounds. |
 
 Radius is in full-resolution pixels: it is scaled automatically for draft

@@ -29,6 +29,7 @@ enum ParamId {
     kIdComposite,
     kIdWorkingSpace,
     kIdExpandBounds,
+    kIdRolloff,
     kIdRenderGroupEnd,
     kIdAboutGroup,
     kIdAboutGroupEnd
@@ -108,6 +109,9 @@ PF_Err CheckoutColor(PF_InData* in_data, int index, float* out_rgb) {
 
 }  // namespace
 
+// Ordered to match HighlightRolloff.
+constexpr char kRolloffChoices[] = "Preserve Hue|Clip";
+
 PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data) {
     PF_ParamDef def;
 
@@ -167,6 +171,9 @@ PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data) {
     PF_ADD_CHECKBOXX("Expand Bounds", TRUE, 0, kIdExpandBounds);
 
     AEFX_CLR_STRUCT(def);
+    PF_ADD_POPUPX("Highlight Rolloff", 2, 1, kRolloffChoices, 0, kIdRolloff);
+
+    AEFX_CLR_STRUCT(def);
     PF_END_TOPIC(kIdRenderGroupEnd);
 
     // An empty group whose header is the build. Nothing to configure; it is
@@ -197,6 +204,7 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     int quality = 2;
     int composite = 1;
     int working_space = 1;
+    int rolloff = 1;
     bool expand_bounds = true;
 
     if (!err) err = CheckoutFloat(in_data, kParamThreshold, &threshold);
@@ -210,6 +218,7 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     if (!err) err = CheckoutPopup(in_data, kParamQuality, &quality);
     if (!err) err = CheckoutPopup(in_data, kParamComposite, &composite);
     if (!err) err = CheckoutPopup(in_data, kParamWorkingSpace, &working_space);
+    if (!err) err = CheckoutPopup(in_data, kParamRolloff, &rolloff);
     if (!err) err = CheckoutCheckbox(in_data, kParamExpandBounds, &expand_bounds);
     if (err) return err;
 
@@ -237,6 +246,7 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     settings.quality = static_cast<Quality>(quality_level);
     settings.composite = static_cast<CompositeMode>(std::clamp(composite - 1, 0, 2));
     settings.working_space = static_cast<WorkingSpace>(std::clamp(working_space - 1, 0, 2));
+    settings.rolloff = static_cast<HighlightRolloff>(std::clamp(rolloff - 1, 0, 1));
     params.expand_bounds = expand_bounds;
 
     *out_params = params;

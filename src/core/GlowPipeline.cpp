@@ -271,6 +271,7 @@ struct CompositeContext {
     CompositeMode mode = CompositeMode::kAdd;
     const TransferFunction* transfer = nullptr;
     bool dither = false;
+    bool rolloff = false;
     UpsampleFilter filter = UpsampleFilter::kQuadratic;
     int scale = 1;
     int taps = 3;
@@ -374,15 +375,36 @@ inline PixelF CombinePixel(const PixelF& source_linear, const PixelF& glow, cons
     return lit;
 }
 
-inline PixelF EncodePremultiplied(const PixelF& linear, const TransferFunction& transfer) {
-    if (transfer.IsIdentity()) return linear;
-    if (linear.a >= kOpaque) {
-        return PixelF{linear.a, transfer.Encode(linear.r), transfer.Encode(linear.g), transfer.Encode(linear.b)};
-    }
-    if (linear.a <= kTransparent) return PixelF{linear.a, 0.0f, 0.0f, 0.0f};
-    const float inv = 1.0f / linear.a;
-    return PixelF{linear.a, transfer.Encode(linear.r * inv) * linear.a,
-                  transfer.Encode(linear.g * inv) * linear.a, transfer.Encode(linear.b * inv) * linear.a};
+// Smooth shoulder on the brightest channel, applied to the whole triple so the
+// ratios between channels - the hue - are untouched. Identity below the knee,
+// asymptotic to 1 above it, C1 at the join. Float output keeps its HDR values
+// and never sees this.
+inline void RolloffHighlights(float& r, float& g, float& b) {
+    constexpr float kKnee = 0.75f;
+    const float m = std::max(r, std::max(g, b));
+    if (!(m > kKnee)) return;
+    const float head = 1.0f - kKnee;
+    const float shaped = kKnee + head * (1.0f - std::exp(-(m - kKnee) / head));
+    const float scale = shaped / m;
+    r *= scale;
+    g *= scale;
+    b *= scale;
+}
+
+inline PixelF EncodePremultiplied(const PixelF& linear, const TransferFunction& transfer, bool rolloff) {
+    // The rolloff is about the output's range, not about the transfer, so it
+    // applies to a linear working space too.
+    if (!rolloff && transfer.IsIdentity()) return linear;
+    const bool opaque = linear.a >= kOpaque;
+    if (!opaque && linear.a <= kTransparent) return PixelF{linear.a, 0.0f, 0.0f, 0.0f};
+    const float inv = opaque ? 1.0f : 1.0f / linear.a;
+    float r = linear.r * inv;
+    float g = linear.g * inv;
+    float b = linear.b * inv;
+    if (rolloff) RolloffHighlights(r, g, b);
+    const float back = opaque ? 1.0f : linear.a;
+    if (transfer.IsIdentity()) return PixelF{linear.a, r * back, g * back, b * back};
+    return PixelF{linear.a, transfer.Encode(r) * back, transfer.Encode(g) * back, transfer.Encode(b) * back};
 }
 
 template <PixelDepth kDepth>
@@ -461,7 +483,7 @@ void CompositeRows(const HostImage& source, int offset_x, int offset_y, const Im
             const PixelF raw = src_valid ? ReadRowPixel<kSrcDepth>(src_row, src_x) : PixelF{0.0f, 0.0f, 0.0f, 0.0f};
             const PixelF source_linear = LinearizePremultiplied(raw, transfer);
             const PixelF lit = CombinePixel(source_linear, glow_pixel, ctx);
-            const PixelF encoded = EncodePremultiplied(lit, transfer);
+            const PixelF encoded = EncodePremultiplied(lit, transfer, ctx.rolloff);
 
             if constexpr (kDstDepth == PixelDepth::kFloat32) {
                 static_cast<PixelF*>(dst_row)[x] = encoded;
@@ -680,6 +702,8 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
     ctx.mode = settings.composite;
     ctx.transfer = &transfer;
     ctx.dither = settings.dither && render.dest.depth != PixelDepth::kFloat32;
+    ctx.rolloff = settings.rolloff == HighlightRolloff::kPreserveHue &&
+                  render.dest.depth != PixelDepth::kFloat32;
     ctx.filter = settings.quality >= Quality::kHigh ? UpsampleFilter::kCubic : UpsampleFilter::kQuadratic;
     ctx.scale = scale;
     ctx.grid_start = grid_start;

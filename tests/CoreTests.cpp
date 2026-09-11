@@ -616,6 +616,50 @@ void TestGlowTracksSubPixelMotion() {
     Check(worst < 0.05f, "glow follows the source through sub-pixel motion");
 }
 
+// Clipping each channel on its own reaches the ceiling at a different
+// brightness per channel, so an over-driven saturated colour drifts to white.
+// Rolling the triple off together keeps the ratios between channels.
+void TestHighlightRolloffKeepsHue() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 500;
+    const int height = 400;
+    TestImage source(width, height, PixelDepth::kFloat32);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const bool inside = std::hypot(x - 250.0, y - 200.0) < 50.0;
+            // A light red, so the weak channels are non-zero and can clip too.
+            source.SetPixel(x, y, inside ? PixelF{1.0f, 1.0f, 0.08f, 0.08f} : PixelF{0.0f, 0.0f, 0.0f, 0.0f});
+        }
+    }
+
+    auto hue_drift = [&](abglow::HighlightRolloff mode) {
+        TestImage dest(width, height, PixelDepth::kBits8);
+        GlowSettings settings = DefaultSettings();
+        settings.threshold = 0.3f;
+        settings.radius_x = settings.radius_y = 110.0f;
+        settings.intensity = 60.0f;
+        settings.composite = CompositeMode::kGlowOnly;
+        settings.rolloff = mode;
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
+              "rolloff render succeeds");
+        // In the blown-out core, how close to neutral has the colour gone?
+        const PixelF p = dest.GetPixel(250, 200);
+        const float mx = std::max(p.r, std::max(p.g, p.b));
+        const float mn = std::min(p.r, std::min(p.g, p.b));
+        return mx > 0.0f ? mn / mx : 0.0f;
+    };
+
+    const float clipped = hue_drift(abglow::HighlightRolloff::kClip);
+    const float preserved = hue_drift(abglow::HighlightRolloff::kPreserveHue);
+    Check(clipped > 0.8f, "clipping does drive an over-driven colour towards neutral");
+    Check(preserved < 0.35f, "preserving hue keeps an over-driven colour saturated");
+}
+
 void TestThresholdAndPassThrough() {
     MallocAllocator allocator;
     ThreadPoolRunner runner(2);
@@ -876,6 +920,7 @@ int main() {
     TestDitherIsQuietAndStill();
     TestRegionOfInterestMatchesFullFrame();
     TestGlowTracksSubPixelMotion();
+    TestHighlightRolloffKeepsHue();
     TestThresholdAndPassThrough();
     TestTransparentInput();
     TestHdrNotClamped();
