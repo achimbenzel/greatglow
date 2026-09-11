@@ -122,6 +122,23 @@ Quarter is 0.8% in size and 0.1% in brightness. Comparing resolutions in the
 viewer needs a fixed zoom, since After Effects upscales a reduced-resolution
 render for display.
 
+### Known limitation: non-square pixels
+
+The per-level Gaussian is anisotropic, but the pyramid's own resampling — the
+decimation and the reconstruction filter — is isotropic, and it contributes a
+fixed amount of blur in render pixels. On a non-square-pixel composition the
+narrower axis has a smaller sigma, so that fixed amount is a larger fraction of
+it, and the glow comes out wider along that axis in composition space:
+
+| Pixel aspect | measured width ratio (should be 1.0) |
+|--------------|--------------------------------------|
+| 1.00 | 1.000 |
+| 1.46 | 1.049 |
+| 2.00 | 1.188 |
+
+Fixing it properly needs a separate pyramid step per axis. Square-pixel
+compositions — which is everything at 1080p, 4K and UHD — are unaffected.
+
 ## Testing
 
 ```sh

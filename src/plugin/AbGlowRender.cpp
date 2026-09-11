@@ -146,7 +146,12 @@ PF_Err SmartPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtr
         return PF_Err_NONE;
     }
 
-    const A_long expansion = BoundsExpansion(params.settings, params.expand_bounds, in_data->width, in_data->height);
+    // Plan against the layer's own rect, not in_data's nominal size: that is
+    // what the render is handed, and the plan depends on it, so using anything
+    // else could declare bounds for a glow the render does not produce.
+    const A_long expansion = BoundsExpansion(params.settings, params.expand_bounds,
+                                             layer_rect.right - layer_rect.left,
+                                             layer_rect.bottom - layer_rect.top);
     const PF_LRect output_rect = Inflate(layer_rect, expansion);
 
     diag::Frame();
