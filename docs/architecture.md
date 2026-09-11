@@ -246,10 +246,18 @@ Two properties matter more than the noise shaping:
   `result_rect = max_result_rect = layer ⊕ reach` together with
   `PF_RenderOutputFlag_RETURNS_EXTRA_PIXELS`. `max_result_rect` never depends on
   the requested region, which is what After Effects requires.
-* **Whole-frame rendering.** The glow at one pixel depends on a wide
-  neighbourhood, so the effect always renders its full result rather than
-  sub-regions. After Effects caches the frame, so a tiled request would only
-  recompute the same pixels with a wider halo.
+* **The pyramid spans the glow, not the request.** After Effects renders only
+  what it needs — the visible part of a zoomed viewer, a region of interest, a
+  tile — so the same glow is asked for through windows of every size and
+  position. The pyramid is built over the layer inflated by the glow's reach,
+  in layer coordinates, and the composite then reads whatever window was asked
+  for out of it. Sizing level 0 to the requested rectangle instead both
+  discarded source pixels outside it and made the octave blurs clamp against
+  its edge: a window covering the layer plus 40 px came out 4.4% brighter
+  overall and up to 121% different on individual pixels, so the glow changed
+  with the viewer's zoom, scroll and resolution, and flickered as a layer
+  moved. `TestRegionOfInterestMatchesFullFrame` renders four windows and
+  requires each to match the same pixels of the full-frame render.
 * **Geometry.** The offset between the input and output buffers is derived from
   the layer-space rectangles the effect itself declared, cross-checked against
   the sizes the host actually handed back, falling back to the worlds'

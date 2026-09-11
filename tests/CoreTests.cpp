@@ -485,6 +485,72 @@ void TestDitherIsQuietAndStill() {
     Check(differing * 10 < total, "dither does not crawl when the layer moves");
 }
 
+// A host renders only the region it needs - the visible part of a zoomed
+// viewer, a region of interest, a tile - so the same glow gets asked for
+// through windows of every size and position. What comes back has to be the
+// same pixels either way. Sizing the pyramid to the request instead of to the
+// glow discarded source pixels outside the window and made the blur clamp
+// against its edge, which changed the glow with the viewer.
+void TestRegionOfInterestMatchesFullFrame() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int layer_w = 400;
+    const int layer_h = 300;
+    const float radius = 300.0f;
+    const int expansion = static_cast<int>(std::ceil(
+        abglow::MakeGlowPlan(abglow::RadiusToSigma(radius), Quality::kNormal, layer_w, layer_h).Reach()));
+
+    TestImage source(layer_w, layer_h, PixelDepth::kFloat32);
+    for (int y = 100; y < 200; ++y) {
+        for (int x = 150; x < 250; ++x) source.SetPixel(x, y, PixelF{1.0f, 4.0f, 4.0f, 4.0f});
+    }
+
+    GlowSettings settings = DefaultSettings();
+    settings.threshold = 0.5f;
+    settings.radius_x = settings.radius_y = radius;
+    settings.composite = CompositeMode::kGlowOnly;
+
+    const int full_w = layer_w + 2 * expansion;
+    const int full_h = layer_h + 2 * expansion;
+    TestImage full(full_w, full_h, PixelDepth::kFloat32);
+    GlowRender render;
+    render.source = source.View();
+    render.dest = full.View();
+    render.source_offset_x = -expansion;
+    render.source_offset_y = -expansion;
+    Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk, "full render succeeds");
+
+    struct Window {
+        int x, y, w, h;
+    };
+    const Window windows[] = {{expansion - 40, expansion - 40, layer_w + 80, layer_h + 80},
+                              {0, 0, 200, 150},
+                              {full_w - 260, full_h - 190, 260, 190},
+                              {expansion, expansion, layer_w, layer_h}};
+
+    for (const Window& win : windows) {
+        TestImage part(win.w, win.h, PixelDepth::kFloat32);
+        GlowRender sub;
+        sub.source = source.View();
+        sub.dest = part.View();
+        sub.source_offset_x = -expansion + win.x;
+        sub.source_offset_y = -expansion + win.y;
+        Check(abglow::RenderGlow(settings, sub, allocator, runner) == GlowResult::kOk, "window render succeeds");
+
+        float worst = 0.0f;
+        for (int y = 0; y < win.h; ++y) {
+            for (int x = 0; x < win.w; ++x) {
+                const float a = full.GetPixel(win.x + x, win.y + y).g;
+                const float b = part.GetPixel(x, y).g;
+                const float scale = std::max(std::fabs(a), 1e-4f);
+                worst = std::max(worst, std::fabs(b - a) / scale);
+            }
+        }
+        Check(worst < 1e-3f, "a requested window matches the same pixels of the full render");
+    }
+}
+
 void TestThresholdAndPassThrough() {
     MallocAllocator allocator;
     ThreadPoolRunner runner(2);
@@ -743,6 +809,7 @@ int main() {
     TestSizeIsResolutionIndependent();
     TestBrightnessIsResolutionIndependent();
     TestDitherIsQuietAndStill();
+    TestRegionOfInterestMatchesFullFrame();
     TestThresholdAndPassThrough();
     TestTransparentInput();
     TestHdrNotClamped();

@@ -32,14 +32,9 @@ inline int CeilDiv(int value, int divisor) {
     return value >= 0 ? (value + divisor - 1) / divisor : -((-value) / divisor);
 }
 
-// Where level-0 cell 0 starts, in destination pixels: at or before 0, and
-// positioned so that cell boundaries fall on multiples of `scale` in source
-// coordinates. Aligning to the source rather than to the destination rectangle
-// matters because that rectangle's corner moves whenever the radius changes the
-// bounds expansion, which would otherwise slide the whole glow sideways as the
-// radius animates.
-inline int GridStart(int source_offset, int scale) {
-    return -(((source_offset % scale) + scale) % scale);
+inline int FloorToMultiple(int value, int modulus) {
+    const int quotient = value >= 0 ? value / modulus : -((-value + modulus - 1) / modulus);
+    return quotient * modulus;
 }
 
 inline PixelF LinearizePremultiplied(const PixelF& p, const TransferFunction& transfer) {
@@ -564,15 +559,33 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
     const float sigma_y = RadiusToSigma(settings.radius_y);
     const float sigma = std::max(sigma_x, sigma_y);
 
-    const int min_scale = MinimumBaseScale(render.dest.width, render.dest.height, settings.quality);
+    // The pyramid has to span everywhere the glow has light, not the rectangle
+    // the host happens to be asking for. A host renders only what it needs -
+    // the visible part of a zoomed viewer, a region of interest - and sizing
+    // level 0 to that both discards source pixels outside it and makes the
+    // blur clamp against its edge, so the same glow came out different
+    // depending on how much of it was on screen.
+    const int budget_reach = static_cast<int>(std::ceil(4.5f * sigma));
+    const int min_scale = MinimumBaseScale(render.source.width + 2 * budget_reach,
+                                           render.source.height + 2 * budget_reach, settings.quality);
     const GlowPlan plan =
         MakeGlowPlan(sigma, settings.quality, render.source.width, render.source.height, min_scale);
     const int scale = plan.base_scale;
 
-    const PixelPoint grid_start{GridStart(render.source_offset_x, scale),
-                                GridStart(render.source_offset_y, scale)};
-    const int level0_width = (render.dest.width - grid_start.x + scale - 1) / scale;
-    const int level0_height = (render.dest.height - grid_start.y + scale - 1) / scale;
+    // In source coordinates, so the grid is anchored to the layer's pixels: it
+    // must not move when the radius animates the bounds, nor when the host asks
+    // for a different rectangle.
+    const int reach = static_cast<int>(std::ceil(plan.Reach()));
+    const int low_x = std::min(-reach, render.source_offset_x);
+    const int low_y = std::min(-reach, render.source_offset_y);
+    const int high_x = std::max(render.source.width + reach, render.source_offset_x + render.dest.width);
+    const int high_y = std::max(render.source.height + reach, render.source_offset_y + render.dest.height);
+    const PixelPoint origin{FloorToMultiple(low_x, scale), FloorToMultiple(low_y, scale)};
+    const int level0_width = CeilDiv(high_x - origin.x, scale);
+    const int level0_height = CeilDiv(high_y - origin.y, scale);
+
+    // The rest of the pipeline works in destination pixels.
+    const PixelPoint grid_start{origin.x - render.source_offset_x, origin.y - render.source_offset_y};
 
     OwnedImageF levels[kMaxPyramidLevels];
     for (int i = 0; i < plan.level_count; ++i) {
