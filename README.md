@@ -135,10 +135,13 @@ Effects.
 Working: everything described above, verified by the unit tests, the mock host,
 and address/undefined/thread sanitizer runs of the core.
 
+The plug-in loads and renders in After Effects. Development and the automated
+verification happen on Linux, against the SDK headers, a cross-compiled Windows
+binary and the mock host, so the checklist in [docs/testing.md](docs/testing.md)
+is still the reference for what to confirm in the host itself.
+
 Not implemented yet: GPU rendering (see [docs/gpu.md](docs/gpu.md)), a custom
 UI, and Windows-on-Arm builds (which need the `CodeWinARM64` PiPL key from SDK
-25.6 or newer — see `WIN_ARM64_FOURCC` in `tools/generate_pipl.py`).
-
-The plug-in has not yet been run inside After Effects itself; it was developed
-and verified on Linux against the SDK headers, a cross-compiled Windows binary
-and a mock host.
+25.6 or newer — see `WIN_ARM64_FOURCC` in `tools/generate_pipl.py`). Windows on
+Arm only matters on Arm hardware running the native After Effects build; on a
+normal x64 machine the x64 binary is the right one.
