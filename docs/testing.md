@@ -77,6 +77,26 @@ things only the real host can tell you.
 14. **Stability.** Apply and remove the effect 20 times, undo/redo, duplicate
     the layer, save and reopen the project. Watch memory in Task Manager for
     growth that does not come back.
+## When a report cannot be reproduced
+
+The mock host is written from the same assumptions as the plug-in, so it cannot
+catch a misunderstanding of what After Effects actually asks for. Build with
+diagnostics to record that from inside a real session:
+
+```bat
+cmake -S . -B build-diag -G "Visual Studio 17 2022" -A x64 -DABGLOW_DIAGNOSTICS=ON
+cmake --build build-diag --config Release
+```
+
+Every pre-render and render then appends to `%TEMP%\AbGlow-diag.log`: the layer
+size, downsample factor and bit depth; the rectangle the host requested; the
+rectangle the effect declared; the rectangle the host granted for the input;
+the size, origin and row pitch of both worlds; and the plan the pipeline chose.
+The file is rewritten on each launch and capped at 20000 lines. Diagnostics are
+off in a normal build and cost nothing there.
+
+## Manual checks
+
 15. **The right build.** The parameter list ends with a group named after the
     build (`v1.1.0 (abc1234)`). Check it matches what was just installed before
     trusting any of the above — After Effects scans both the application's

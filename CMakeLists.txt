@@ -104,6 +104,7 @@ if(ABGLOW_BUILD_PLUGIN)
         src/plugin/AbGlowParams.cpp
         src/plugin/AbGlowRender.cpp
         src/plugin/AeAdapters.cpp
+        src/plugin/Diagnostics.cpp
         "${ABGLOW_GENERATED_DIR}/AbGlow_PiPL.rc")
 
     target_link_libraries(AbGlow PRIVATE abglow_core)
@@ -113,6 +114,15 @@ if(ABGLOW_BUILD_PLUGIN)
         "${ABGLOW_GENERATED_DIR}")
     target_include_directories(AbGlow SYSTEM PRIVATE ${AE_SDK_INCLUDE_DIRS})
     target_compile_definitions(AbGlow PRIVATE AB_GLOW_BUILD_ID="${ABGLOW_BUILD_ID}")
+
+    # Writes a per-render log to %TEMP%/AbGlow-diag.log. Off by default; it is
+    # how a real After Effects session can be observed when the mock host in
+    # tests/ cannot reproduce a report.
+    option(ABGLOW_DIAGNOSTICS "Log what the host asks the plug-in for" OFF)
+    if(ABGLOW_DIAGNOSTICS)
+        target_compile_definitions(AbGlow PRIVATE ABGLOW_DIAGNOSTICS)
+        message(STATUS "AB Glow diagnostics: ON")
+    endif()
 
     set_target_properties(AbGlow PROPERTIES
         PREFIX ""

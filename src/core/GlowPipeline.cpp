@@ -536,6 +536,17 @@ float RadiusToSigma(float radius) {
     return std::max(0.0f, radius) * 0.32f;
 }
 
+GlowPlan PlanForRender(const GlowSettings& settings, const GlowRender& render) {
+    // The pyramid has to span everywhere the glow has light, not the rectangle
+    // the host happens to be asking for, so the memory budget is measured
+    // against that span rather than against the destination.
+    const float sigma = std::max(RadiusToSigma(settings.radius_x), RadiusToSigma(settings.radius_y));
+    const int budget_reach = static_cast<int>(std::ceil(4.5f * sigma));
+    const int min_scale = MinimumBaseScale(render.source.width + 2 * budget_reach,
+                                           render.source.height + 2 * budget_reach, settings.quality);
+    return MakeGlowPlan(sigma, settings.quality, render.source.width, render.source.height, min_scale);
+}
+
 GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Allocator& allocator,
                       TaskRunner& runner) {
     if (render.dest.Empty()) return GlowResult::kInvalidArguments;
@@ -559,17 +570,7 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
     const float sigma_y = RadiusToSigma(settings.radius_y);
     const float sigma = std::max(sigma_x, sigma_y);
 
-    // The pyramid has to span everywhere the glow has light, not the rectangle
-    // the host happens to be asking for. A host renders only what it needs -
-    // the visible part of a zoomed viewer, a region of interest - and sizing
-    // level 0 to that both discards source pixels outside it and makes the
-    // blur clamp against its edge, so the same glow came out different
-    // depending on how much of it was on screen.
-    const int budget_reach = static_cast<int>(std::ceil(4.5f * sigma));
-    const int min_scale = MinimumBaseScale(render.source.width + 2 * budget_reach,
-                                           render.source.height + 2 * budget_reach, settings.quality);
-    const GlowPlan plan =
-        MakeGlowPlan(sigma, settings.quality, render.source.width, render.source.height, min_scale);
+    const GlowPlan plan = PlanForRender(settings, render);
     const int scale = plan.base_scale;
 
     // In source coordinates, so the grid is anchored to the layer's pixels: it

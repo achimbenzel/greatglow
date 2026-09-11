@@ -42,6 +42,10 @@ enum class GlowResult { kOk, kInvalidArguments, kOutOfMemory };
 // Converts the UI radius (0-1000) into a Gaussian sigma in pixels.
 float RadiusToSigma(float radius);
 
+// The plan a given render will use. Exposed so a diagnostic build can report
+// exactly what the pipeline chose, rather than recomputing it and drifting.
+GlowPlan PlanForRender(const GlowSettings& settings, const GlowRender& render);
+
 GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Allocator& allocator,
                       TaskRunner& runner);
 

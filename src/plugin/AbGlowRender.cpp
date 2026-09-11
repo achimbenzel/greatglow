@@ -1,5 +1,7 @@
 #include "AbGlowRender.h"
 
+#include "Diagnostics.h"
+
 #include <algorithm>
 #include <cmath>
 #include <new>
@@ -92,6 +94,14 @@ PF_Err RunPipeline(PF_InData* in_data, const GlowSettings& settings, PF_EffectWo
         render.source_offset_x = offset_x;
         render.source_offset_y = offset_y;
 
+        if (diag::Enabled()) {
+            const GlowPlan plan = PlanForRender(settings, render);
+            diag::Log("        source=%dx%d dest=%dx%d  plan: scale=%d levels=%d level_sigma=%.3f "
+                      "eff_sigma=%.1f reach=%.1f",
+                      render.source.width, render.source.height, render.dest.width, render.dest.height,
+                      plan.base_scale, plan.level_count, plan.level_sigma, plan.EffectiveSigma(), plan.Reach());
+        }
+
         switch (RenderGlow(settings, render, allocator, runner)) {
             case GlowResult::kOk: break;
             case GlowResult::kOutOfMemory: err = PF_Err_OUT_OF_MEMORY; break;
@@ -139,6 +149,22 @@ PF_Err SmartPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtr
     const A_long expansion = BoundsExpansion(params.settings, params.expand_bounds, in_data->width, in_data->height);
     const PF_LRect output_rect = Inflate(layer_rect, expansion);
 
+    diag::Frame();
+    diag::Log("prerender layer=%dx%d downsample=%d/%d,%d/%d quality=%d depth=%d", (int)in_data->width,
+              (int)in_data->height, (int)in_data->downsample_x.num, (int)in_data->downsample_x.den,
+              (int)in_data->downsample_y.num, (int)in_data->downsample_y.den, (int)in_data->quality,
+              (int)extra->input->bitdepth);
+    diag::Log("  radius=%.1f,%.1f intensity=%.3f exposure=%.2f threshold=%.3f q=%d expand=%d",
+              params.settings.radius_x, params.settings.radius_y, params.settings.intensity,
+              params.settings.exposure, params.settings.threshold, (int)params.settings.quality,
+              params.expand_bounds ? 1 : 0);
+    diag::Log("  request rect  = [%d %d %d %d]", (int)request.rect.left, (int)request.rect.top,
+              (int)request.rect.right, (int)request.rect.bottom);
+    diag::Log("  layer  rect   = [%d %d %d %d]", (int)layer_rect.left, (int)layer_rect.top, (int)layer_rect.right,
+              (int)layer_rect.bottom);
+    diag::Log("  expansion=%d declared=[%d %d %d %d]", (int)expansion, (int)output_rect.left,
+              (int)output_rect.top, (int)output_rect.right, (int)output_rect.bottom);
+
     // The glow needs the whole layer, so ask for all of it and always render the
     // full result. After Effects caches the frame, so partial requests would
     // only re-do the same work.
@@ -156,6 +182,12 @@ PF_Err SmartPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtr
     data->output_rect = output_rect;
     data->input_rect = input_result.result_rect;
     data->has_input = !IsEmpty(input_result.result_rect);
+
+    diag::Log("  input granted = [%d %d %d %d] max=[%d %d %d %d]", (int)input_result.result_rect.left,
+              (int)input_result.result_rect.top, (int)input_result.result_rect.right,
+              (int)input_result.result_rect.bottom, (int)input_result.max_result_rect.left,
+              (int)input_result.max_result_rect.top, (int)input_result.max_result_rect.right,
+              (int)input_result.max_result_rect.bottom);
 
     extra->output->result_rect = output_rect;
     extra->output->max_result_rect = output_rect;
@@ -200,6 +232,19 @@ PF_Err SmartRender(PF_InData* in_data, PF_OutData* out_data, PF_SmartRenderExtra
     }
 
     const PixelDepth depth = DepthFromBitsPerChannel(extra->input->bitdepth);
+
+    diag::Log("render  output world=%dx%d origin=(%d,%d) rowbytes=%d -> resolved (%d,%d)",
+              (int)output_world->width, (int)output_world->height, (int)output_world->origin_x,
+              (int)output_world->origin_y, (int)output_world->rowbytes, (int)output_left, (int)output_top);
+    if (input_world != nullptr) {
+        diag::Log("        input  world=%dx%d origin=(%d,%d) rowbytes=%d", (int)input_world->width,
+                  (int)input_world->height, (int)input_world->origin_x, (int)input_world->origin_y,
+                  (int)input_world->rowbytes);
+    } else {
+        diag::Log("        input  world=none");
+    }
+    diag::Log("        offset=(%d,%d) depth=%d", (int)offset_x, (int)offset_y, (int)depth);
+
     return RunPipeline(in_data, data->params.settings, input_world, output_world, static_cast<int>(offset_x),
                        static_cast<int>(offset_y), depth);
 }
