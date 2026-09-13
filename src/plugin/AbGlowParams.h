@@ -33,7 +33,8 @@ enum ParamIndex {
     kParamRenderGroupEnd = 19,
     kParamAboutGroupStart = 20,
     kParamAboutGroupEnd = 21,
-    kParamCount = 22
+    kParamFalloff = 22,
+    kParamCount = 23
 };
 
 PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data);

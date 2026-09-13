@@ -27,12 +27,13 @@ int OctaveCount(Quality quality) {
 // count; this stays fixed so the step between octaves is always a factor of two.
 constexpr float kLevelSigma = 1.8f;
 
-// How the weight falls from the widest octave to the finest. 0 gives every
-// octave the same energy - the 1/r^2 of real glare, but so peaked that the
-// halo all but disappears; 2 equalises the octaves' peaks and is a plain blur.
-// 0.7 keeps individual highlights glowing on their own while leaving a halo
-// that reads at the radius asked for.
-constexpr float kOctaveTilt = 0.5f;
+// Veiling glare falls off as a power of the angle: the Stiles-Holladay law used
+// in the CIE disability-glare equations is 1/theta^2, which the CIE general
+// equation steepens towards 1/theta^3 close in. A sum of Gaussians whose sigmas
+// double reproduces 1/r^n when the octave weights go as sigma^(2-n): each
+// octave's peak density is w_k / sigma_k^2, and setting that proportional to
+// sigma_k^-n is what puts the curve on the law.
+float OctaveWeightExponent(float falloff) { return 2.0f - std::clamp(falloff, 1.0f, 4.0f); }
 
 // Variance the box downsample and the reconstruction filter add, in units of
 // the per-level blur's variance times level sigma squared. Taking it back off
@@ -95,7 +96,8 @@ int MaximumBaseScale(float sigma, int layer_width, int layer_height) {
     return std::clamp(static_cast<int>(working / static_cast<float>(kMinLevelExtent)), 1, kMaxBaseScale);
 }
 
-GlowPlan MakeGlowPlan(float sigma, Quality quality, int layer_width, int layer_height, int min_base_scale) {
+GlowPlan MakeGlowPlan(float sigma, Quality quality, int layer_width, int layer_height, int min_base_scale,
+                      float falloff) {
     GlowPlan plan;
 
     const float spread = std::sqrt(1.0f + kResamplingVariance / (kLevelSigma * kLevelSigma));
@@ -120,13 +122,12 @@ GlowPlan MakeGlowPlan(float sigma, Quality quality, int layer_width, int layer_h
     plan.level_sigma = sigma0 / CascadeFactor(octaves - 1);
     plan.level_count = octaves;
 
-    // Weight falls as (sigma_k / sigma_max)^kTilt. 0 is equal energy per octave,
-    // the 1/r^2 of real glare; 2 would equalise the peaks and be a plain blur.
+    const float exponent = OctaveWeightExponent(falloff);
     float sum = 0.0f;
     const float widest = CascadedSigma(plan.level_sigma, plan.level_count - 1);
     for (int i = 0; i < plan.level_count; ++i) {
         plan.effective_sigma[i] = CascadedSigma(plan.level_sigma, i) * spread;
-        const float w = std::pow(CascadedSigma(plan.level_sigma, i) / widest, kOctaveTilt);
+        const float w = std::pow(CascadedSigma(plan.level_sigma, i) / widest, exponent);
         plan.weights[i] = w;
         sum += w;
     }

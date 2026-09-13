@@ -36,19 +36,21 @@ enum ParamId {
     kIdRolloff = 18,
     kIdRenderGroupEnd = 19,
     kIdAboutGroup = 20,
-    kIdAboutGroupEnd = 21
+    kIdAboutGroupEnd = 21,
+    kIdFalloff = 22
 };
 
 // The layout as shipped. These numbers are in every saved project that uses the
 // effect, so a change here is a change to a file format other people's work
 // depends on. Appending is fine; anything else is not.
-static_assert(kParamCount == 22, "parameters may only be appended");
+static_assert(kParamCount == 23, "parameters may only be appended");
 static_assert(kParamExpandBounds == 17 && kParamRolloff == 18, "shipped parameter order");
 static_assert(kParamRenderGroupEnd == 19, "shipped parameter order");
 static_assert(kParamAboutGroupStart == 20 && kParamAboutGroupEnd == 21, "shipped parameter order");
 static_assert(kIdExpandBounds == 17 && kIdRolloff == 18, "shipped parameter ids");
 static_assert(kIdRenderGroupEnd == 19, "shipped parameter ids");
 static_assert(kIdAboutGroup == 20 && kIdAboutGroupEnd == 21, "shipped parameter ids");
+static_assert(kParamFalloff == 22 && kIdFalloff == 22, "shipped parameter order and id");
 
 constexpr char kQualityChoices[] = "Draft|Normal|High|Best";
 constexpr char kCompositeChoices[] = "Add|Screen|Glow Only";
@@ -199,6 +201,10 @@ PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data) {
     AEFX_CLR_STRUCT(def);
     PF_END_TOPIC(kIdAboutGroupEnd);
 
+    // Appended, because the layout of everything above it has shipped.
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Falloff", 1.5f, 3.0f, 1.5f, 3.0f, 2.0f, PF_Precision_HUNDREDTHS, 0, 0, kIdFalloff);
+
     out_data->num_params = kParamCount;
     return PF_Err_NONE;
 }
@@ -220,6 +226,7 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     int composite = 1;
     int working_space = 1;
     int rolloff = 1;
+    float falloff = 2.0f;
     bool expand_bounds = true;
 
     if (!err) err = CheckoutFloat(in_data, kParamThreshold, &threshold);
@@ -234,6 +241,7 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     if (!err) err = CheckoutPopup(in_data, kParamComposite, &composite);
     if (!err) err = CheckoutPopup(in_data, kParamWorkingSpace, &working_space);
     if (!err) err = CheckoutPopup(in_data, kParamRolloff, &rolloff);
+    if (!err) err = CheckoutFloat(in_data, kParamFalloff, &falloff);
     if (!err) err = CheckoutCheckbox(in_data, kParamExpandBounds, &expand_bounds);
     if (err) return err;
 
@@ -262,6 +270,7 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     settings.composite = static_cast<CompositeMode>(std::clamp(composite - 1, 0, 2));
     settings.working_space = static_cast<WorkingSpace>(std::clamp(working_space - 1, 0, 2));
     settings.rolloff = static_cast<HighlightRolloff>(std::clamp(rolloff - 1, 0, 1));
+    settings.falloff = std::clamp(falloff, 1.5f, 3.0f);
     params.expand_bounds = expand_bounds;
 
     *out_params = params;

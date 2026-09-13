@@ -603,7 +603,8 @@ GlowPlan PlanForRender(const GlowSettings& settings, const GlowRender& render) {
     const int budget_reach = static_cast<int>(std::ceil(4.5f * sigma));
     const int min_scale = MinimumBaseScale(render.source.width + 2 * budget_reach,
                                            render.source.height + 2 * budget_reach, settings.quality);
-    return MakeGlowPlan(sigma, settings.quality, render.source.width, render.source.height, min_scale);
+    return MakeGlowPlan(sigma, settings.quality, render.source.width, render.source.height, min_scale,
+                        settings.falloff);
 }
 
 GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Allocator& allocator,

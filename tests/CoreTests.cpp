@@ -794,6 +794,60 @@ void TestScreenStaysPositive() {
     Check(lowest >= 0.0f, "screen never drives a channel negative");
 }
 
+// Veiling glare follows a power law - the Stiles-Holladay form used in the CIE
+// disability-glare equations is 1/theta^2. A sum of Gaussians whose sigmas
+// double reproduces 1/r^n when the octave weights go as sigma^(2-n); this
+// checks the rendered profile really lands on the exponent that was asked for.
+void TestFalloffFollowsThePowerLaw() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int size = 1600;
+    for (float falloff : {2.0f, 2.5f, 3.0f}) {
+        TestImage source(size, size, PixelDepth::kFloat32);
+        source.SetPixel(size / 2, size / 2, PixelF{1.0f, 500.0f, 500.0f, 500.0f});
+
+        GlowSettings settings = DefaultSettings();
+        settings.threshold = 0.0f;
+        settings.radius_x = settings.radius_y = 300.0f;
+        settings.composite = CompositeMode::kGlowOnly;
+        settings.working_space = WorkingSpace::kLinear;
+        settings.dither = false;
+        settings.falloff = falloff;
+
+        TestImage dest(size, size, PixelDepth::kFloat32);
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
+              "falloff render succeeds");
+
+        const abglow::GlowPlan plan =
+            abglow::MakeGlowPlan(abglow::RadiusToSigma(settings.radius_x), settings.quality, size, size, 1, falloff);
+        const double low = 3.0 * plan.effective_sigma[0] * plan.base_scale;
+        const double high = plan.effective_sigma[plan.level_count - 1] * plan.base_scale;
+
+        // Least squares on log intensity against log radius.
+        double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+        int n = 0;
+        for (double r = low; r <= high; r *= 1.06) {
+            const double v = dest.GetPixel(size / 2 + static_cast<int>(std::lround(r)), size / 2).g;
+            if (v <= 0.0) continue;
+            const double lr = std::log(r);
+            const double lv = std::log(v);
+            sx += lr;
+            sy += lv;
+            sxx += lr * lr;
+            sxy += lr * lv;
+            ++n;
+        }
+        Check(n > 8, "falloff fit has samples");
+        const double slope = -(n * sxy - sx * sy) / (n * sxx - sx * sx);
+        Check(std::fabs(slope - falloff) < 0.15,
+              "glow follows 1/r^" + std::to_string(static_cast<int>(falloff * 10)) + " as asked");
+    }
+}
+
 void TestThresholdAndPassThrough() {
     MallocAllocator allocator;
     ThreadPoolRunner runner(2);
@@ -1058,6 +1112,7 @@ int main() {
     TestGlowIsBloomNotBlur();
     TestSmallAndLargeShapesGlowAlike();
     TestScreenStaysPositive();
+    TestFalloffFollowsThePowerLaw();
     TestThresholdAndPassThrough();
     TestTransparentInput();
     TestHdrNotClamped();

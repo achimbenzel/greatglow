@@ -90,21 +90,34 @@ used. The widest octave carries the requested σ and the ladder runs down from i
 in halves, six octaves at Normal quality, so the finest is a fixed fraction of
 the radius.
 
-**Every octave carries real weight, and that is what makes it a bloom.** Real
-veiling glare falls off as 1/r², and a sum of Gaussians whose σ double
-reproduces that when the octaves carry equal energy: the fine ones build a
-bright tight core, the wide ones the halo. Weight falls as
-`(σ_k / σ_max)^0.7` — equal energy is so peaked that the halo all but
-disappears, and the opposite extreme, equalising the octaves' *peaks*, is a
-plain blur.
+**The octave weights come from the glare law, not from taste.** Veiling glare
+follows a power of the angle: the Stiles–Holladay form the CIE disability-glare
+equations use is 1/θ², steepening towards 1/θ³ close in. A sum of Gaussians
+whose σ double reproduces 1/rⁿ when the octave weights go as `σ_k^(2−n)` —
+octave *k* contributes a peak density of `w_k / σ_k²`, and setting that
+proportional to `σ_k^−n` is what puts the curve on the law. The **Falloff**
+control is *n* directly, defaulting to the physical 2.0.
+
+Measured by fitting log intensity against log radius across the octave range of
+a rendered point source:
+
+| Falloff asked for | measured exponent | fit R² |
+|-------------------|-------------------|--------|
+| 2.0 | 2.047 | 0.9991 |
+| 2.5 | 2.508 | 0.9995 |
+| 3.0 | 2.985 | 0.9996 |
+
+`TestFalloffFollowsThePowerLaw` holds it to ±0.15. An earlier hand-tuned weight
+tilt measured 1.61 — far shallower than real glare, which is why the glow read
+as haze rather than as light.
 
 Concentrating the weight on a single scale, which is what a log-normal envelope
 does, is a band-limited blur rather than a glow. Measured against this ladder:
 
-| | one scale (0.01/0.23/0.52/0.24) | six octaves |
+| | one scale (0.01/0.23/0.52/0.24) | six octaves on the law |
 |-|-------------------|-------------|
-| Local contrast left in a field of bright specks | 0.025 | **0.076** |
-| Peak glow, 80 px shape vs 600 px shape | 76% apart | **23% apart** |
+| Local contrast left in a field of bright specks | 0.025 | **0.135** |
+| Peak glow, 80 px shape vs 600 px shape | 76% apart | **10.8% apart** |
 
 The first is why a noise field came out blurred instead of glowing; the second
 is why a short word looked dimmer than a long one at the same settings.
