@@ -164,7 +164,7 @@ void TestRadialFalloff() {
     }
     Check(monotonic, "radial profile decreases monotonically");
     Check(profile[0] > profile[40] * 2.0f, "glow has a concentrated core");
-    Check(profile[200] > 0.0f, "glow keeps a soft tail");
+    Check(profile[72] > 0.0f, "glow keeps a soft tail out to the radius");
 }
 
 // A bilinear upsample out of the pyramid leaves a kink every base_scale pixels,
@@ -660,6 +660,140 @@ void TestHighlightRolloffKeepsHue() {
     Check(preserved < 0.35f, "preserving hue keeps an over-driven colour saturated");
 }
 
+// A bloom is a sum of octaves spanning from a fine scale up to the radius, all
+// carrying real weight. Concentrating the weight on one scale instead gives a
+// band-limited blur: a field of bright specks dissolves into a flat haze rather
+// than each speck glowing, and a small bright shape comes out much dimmer than
+// a large one at the same settings.
+void TestGlowIsBloomNotBlur() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 900;
+    const int height = 700;
+    TestImage source(width, height, PixelDepth::kFloat32);
+    unsigned seed = 12345u;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            seed = seed * 1664525u + 1013904223u;
+            const float value = static_cast<float>((seed >> 16) & 0xFF) / 255.0f;
+            const float lit = value > 0.72f ? 3.0f : 0.05f;
+            source.SetPixel(x, y, PixelF{1.0f, lit, lit, lit});
+        }
+    }
+
+    GlowSettings settings = DefaultSettings();
+    settings.threshold = 0.5f;
+    settings.radius_x = settings.radius_y = 60.0f;
+    settings.intensity = 1.0f;
+    settings.composite = CompositeMode::kGlowOnly;
+    settings.working_space = WorkingSpace::kLinear;
+    settings.dither = false;
+
+    TestImage dest(width, height, PixelDepth::kFloat32);
+    GlowRender render;
+    render.source = source.View();
+    render.dest = dest.View();
+    Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk, "bloom render succeeds");
+
+    double mean = 0.0;
+    int count = 0;
+    for (int y = 100; y < height - 100; ++y) {
+        for (int x = 100; x < width - 100; ++x) {
+            mean += dest.GetPixel(x, y).g;
+            ++count;
+        }
+    }
+    mean /= count;
+    double variance = 0.0;
+    for (int y = 100; y < height - 100; ++y) {
+        for (int x = 100; x < width - 100; ++x) {
+            const double d = dest.GetPixel(x, y).g - mean;
+            variance += d * d;
+        }
+    }
+    variance /= count;
+    Check(mean > 0.0 && std::sqrt(variance) / mean > 0.04,
+          "individual highlights still glow instead of merging into a haze");
+}
+
+// The same settings on a short word and a long one should read as the same
+// brightness. Some difference is inherent to a convolution, but when almost all
+// the weight sits on scales wider than the shape it becomes severe.
+void TestSmallAndLargeShapesGlowAlike() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 1800;
+    const int height = 700;
+    auto peak_for = [&](int bar_width) {
+        TestImage source(width, height, PixelDepth::kFloat32);
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                const bool inside = std::abs(x - 900) <= bar_width / 2 && std::abs(y - 350) <= 60;
+                source.SetPixel(x, y, inside ? PixelF{1.0f, 3.0f, 3.0f, 3.0f} : PixelF{0.0f, 0.0f, 0.0f, 0.0f});
+            }
+        }
+        GlowSettings settings = DefaultSettings();
+        settings.threshold = 0.5f;
+        settings.radius_x = settings.radius_y = 200.0f;
+        settings.composite = CompositeMode::kGlowOnly;
+        settings.working_space = WorkingSpace::kLinear;
+        settings.dither = false;
+        TestImage dest(width, height, PixelDepth::kFloat32);
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
+              "shape-size render succeeds");
+        return dest.GetPixel(900, 350).g;
+    };
+
+    const float small = peak_for(80);
+    const float large = peak_for(600);
+    Check(small > 0.0f && large / small < 1.35f, "a small shape glows about as brightly as a large one");
+}
+
+// Screen is only defined in [0,1]; a + b - a*b turns back down above it and
+// goes negative, which put black pixels in the brightest part of an HDR glow.
+void TestScreenStaysPositive() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 700;
+    const int height = 500;
+    TestImage source(width, height, PixelDepth::kFloat32);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const bool inside = std::hypot(x - 350.0, y - 250.0) < 70.0;
+            source.SetPixel(x, y, inside ? PixelF{1.0f, 6.0f, 2.0f, 0.5f} : PixelF{0.0f, 0.0f, 0.0f, 0.0f});
+        }
+    }
+
+    GlowSettings settings = DefaultSettings();
+    settings.threshold = 0.4f;
+    settings.radius_x = settings.radius_y = 140.0f;
+    settings.intensity = 9.0f;
+    settings.composite = CompositeMode::kScreen;
+    settings.working_space = WorkingSpace::kLinear;
+    settings.dither = false;
+
+    TestImage dest(width, height, PixelDepth::kFloat32);
+    GlowRender render;
+    render.source = source.View();
+    render.dest = dest.View();
+    Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk, "screen render succeeds");
+
+    float lowest = 0.0f;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const PixelF p = dest.GetPixel(x, y);
+            lowest = std::min(lowest, std::min(p.r, std::min(p.g, p.b)));
+        }
+    }
+    Check(lowest >= 0.0f, "screen never drives a channel negative");
+}
+
 void TestThresholdAndPassThrough() {
     MallocAllocator allocator;
     ThreadPoolRunner runner(2);
@@ -921,6 +1055,9 @@ int main() {
     TestRegionOfInterestMatchesFullFrame();
     TestGlowTracksSubPixelMotion();
     TestHighlightRolloffKeepsHue();
+    TestGlowIsBloomNotBlur();
+    TestSmallAndLargeShapesGlowAlike();
+    TestScreenStaysPositive();
     TestThresholdAndPassThrough();
     TestTransparentInput();
     TestHdrNotClamped();

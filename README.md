@@ -1,7 +1,7 @@
-# AB Glow
+# Profound Glow
 
 A native Adobe After Effects effect plug-in (`.aex`) that renders a
-high-dynamic-range glow using multi-scale light diffusion, written in C++17.
+high-dynamic-range bloom using multi-scale light diffusion, written in C++17.
 
 The glow is generated in linear light from a soft-knee highlight extraction and
 diffused through a weighted Gaussian pyramid, which gives a bright concentrated
@@ -12,7 +12,7 @@ blurred copy of the layer composited with Add.
 source ─► highlight extraction (soft knee, linear light)
        ─► downsample to pyramid level 0
        ─► blur / downsample cascade (one Gaussian per octave)
-       ─► weighted collapse back up (log-normal octave envelope)
+       ─► weighted collapse back up (six octaves, fine core to wide halo)
        ─► exposure · intensity · saturation · tint
        ─► composite over the original, expanding the layer bounds
 ```
@@ -51,7 +51,7 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DAE_SDK_ROOT="C:/AfterEff
 cmake --build build --config Release
 ```
 
-The plug-in lands at `build/Release/AbGlow.aex`.
+The plug-in lands at `build/Release/ProfoundGlow.aex`.
 
 To build again after changing sources, re-run the second command. Re-running
 CMake is only needed when files are added or `tools/generate_pipl.py` changes.
@@ -65,13 +65,13 @@ cmake --install build --config Release
 installs to `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\AB Tools`,
 the shared folder that every recent After Effects version scans (an
 Administrator prompt is expected). Override it with
-`-DABGLOW_INSTALL_DIR="D:/My Plug-ins"`, or simply copy `AbGlow.aex` into
+`-DABGLOW_INSTALL_DIR="D:/My Plug-ins"`, or simply copy `ProfoundGlow.aex` into
 
 ```
 C:\Program Files\Adobe\Adobe After Effects <version>\Support Files\Plug-ins\
 ```
 
-Restart After Effects; the effect appears under **Effect ▸ AB Tools ▸ AB Glow**.
+Restart After Effects; the effect appears under **Effect ▸ AB Tools ▸ Profound Glow**.
 
 Pick **one** of those two folders. After Effects scans both, so a copy left in
 the other one can be the copy it loads, and replacing the file you were
@@ -80,7 +80,7 @@ after the build it came from (`v1.1.0 (abc1234)`), so the loaded build can be
 read straight off the panel. To find every copy on the machine:
 
 ```powershell
-Get-ChildItem C:\ -Filter AbGlow.aex -Recurse -ErrorAction SilentlyContinue |
+Get-ChildItem C:\ -Filter ProfoundGlow.aex -Recurse -ErrorAction SilentlyContinue |
     Select-Object FullName, Length, LastWriteTime
 ```
 
@@ -128,7 +128,9 @@ render for display.
 Parameter indices and ids are part of the saved project format. They are frozen
 with literal numbers in `AbGlowParams.h` and `AbGlowParams.cpp` and pinned by
 `static_assert`, so a new parameter can only be appended. A project saved by any
-build from v1.1.0 onward opens correctly in any later build.
+build from v1.0.0 onward opens correctly in any later build. The effect's match
+name is `ABBZ ProfoundGlow`; the earlier `AB Glow` is a separate effect, so old
+projects are untouched and both can be installed side by side.
 
 ### Known limitation: non-square pixels
 
@@ -161,7 +163,7 @@ ctest --test-dir build --output-on-failure
   saturated shapes, small bright points, an HDR disc, gradients, a
   semi-transparent block) through every parameter variation and writes PNGs,
   plus a radius calibration table and a banding measurement.
-* `abglow_mock_host AbGlow.aex <dir>` — loads the built plug-in, drives
+* `abglow_mock_host ProfoundGlow.aex <dir>` — loads the built plug-in, drives
   `PF_Cmd_GLOBAL_SETUP` → `PARAMS_SETUP` → `SMART_PRE_RENDER` → `SMART_RENDER`
   through stub host suites at 8/16/32 bpc, and checks the rectangles, the
   handle balance and repeated apply/remove cycles.

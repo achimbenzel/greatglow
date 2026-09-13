@@ -26,7 +26,7 @@ std::string LogPath() {
     const char* temp = std::getenv("TEMP");
     if (temp == nullptr) temp = std::getenv("TMP");
     if (temp == nullptr) temp = ".";
-    return std::string(temp) + "/AbGlow-diag.log";
+    return std::string(temp) + "/ProfoundGlow-diag.log";
 }
 
 long& LineCount() {
@@ -41,7 +41,7 @@ std::FILE* Open() {
         tried = true;
         file = std::fopen(LogPath().c_str(), "w");
         if (file != nullptr) {
-            std::fprintf(file, "AB Glow %s (%s) diagnostics\n", AB_GLOW_VERSION_STRING, AB_GLOW_BUILD_ID);
+            std::fprintf(file, "%s %s (%s) diagnostics\n", AB_GLOW_NAME, AB_GLOW_VERSION_STRING, AB_GLOW_BUILD_ID);
             std::fflush(file);
         }
     }

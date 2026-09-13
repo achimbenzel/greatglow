@@ -350,6 +350,16 @@ inline void StorePixel16(void* row, int x, const PixelF& encoded, float dither) 
 }
 
 // Combines source and glow in linear light and re-encodes for the output depth.
+// Screen only means anything in [0,1]: a + b - a*b turns back down above it and
+// goes negative, which put black pixels in the brightest part of a glow. The
+// part of each value that fits is screened, and whatever is outside carries
+// across additively - exact inside the range, monotonic outside it.
+inline float ScreenChannel(float a, float b) {
+    const float a_in = std::clamp(a, 0.0f, 1.0f);
+    const float b_in = std::clamp(b, 0.0f, 1.0f);
+    return a_in + b_in - a_in * b_in + (a - a_in) + (b - b_in);
+}
+
 inline PixelF CombinePixel(const PixelF& source_linear, const PixelF& glow, const CompositeContext& ctx) {
     PixelF lit{};
     switch (ctx.mode) {
@@ -360,9 +370,9 @@ inline PixelF CombinePixel(const PixelF& source_linear, const PixelF& glow, cons
             lit.b = glow.b;
             return lit;
         case CompositeMode::kScreen:
-            lit.r = source_linear.r + glow.r - source_linear.r * glow.r;
-            lit.g = source_linear.g + glow.g - source_linear.g * glow.g;
-            lit.b = source_linear.b + glow.b - source_linear.b * glow.b;
+            lit.r = ScreenChannel(source_linear.r, glow.r);
+            lit.g = ScreenChannel(source_linear.g, glow.g);
+            lit.b = ScreenChannel(source_linear.b, glow.b);
             break;
         case CompositeMode::kAdd:
         default:

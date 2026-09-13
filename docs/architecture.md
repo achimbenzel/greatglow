@@ -1,5 +1,7 @@
 # Architecture
 
+The plug-in is **Profound Glow**, match name `ABBZ ProfoundGlow`.
+
 ## Layers
 
 ```
@@ -84,10 +86,28 @@ level 2 ── blur σ ──┬────────────────
 Because the blurs cascade, level *i* carries an effective σ of
 `σ_level · sqrt((4ⁱ⁺¹−1)/3)` in level-0 pixels — asymptotically `1.155 · 2ⁱ`,
 but noticeably smaller on the first few rungs, which is why the exact form is
-used. The weights follow a log-normal envelope centred on the requested σ, so
-the narrow octaves build the bright core and the wide ones the long tail. The
-ladder is what keeps large radii cheap: a radius of 400 costs no more than a
-radius of 40.
+used. The widest octave carries the requested σ and the ladder runs down from it
+in halves, six octaves at Normal quality, so the finest is a fixed fraction of
+the radius.
+
+**Every octave carries real weight, and that is what makes it a bloom.** Real
+veiling glare falls off as 1/r², and a sum of Gaussians whose σ double
+reproduces that when the octaves carry equal energy: the fine ones build a
+bright tight core, the wide ones the halo. Weight falls as
+`(σ_k / σ_max)^0.7` — equal energy is so peaked that the halo all but
+disappears, and the opposite extreme, equalising the octaves' *peaks*, is a
+plain blur.
+
+Concentrating the weight on a single scale, which is what a log-normal envelope
+does, is a band-limited blur rather than a glow. Measured against this ladder:
+
+| | one scale (0.01/0.23/0.52/0.24) | six octaves |
+|-|-------------------|-------------|
+| Local contrast left in a field of bright specks | 0.025 | **0.076** |
+| Peak glow, 80 px shape vs 600 px shape | 76% apart | **23% apart** |
+
+The first is why a noise field came out blurred instead of glowing; the second
+is why a short word looked dimmer than a long one at the same settings.
 
 The collapse runs from the top down, each level being upsampled into the next
 finer one and added with its weight, so only one buffer per level is ever live.
@@ -175,15 +195,16 @@ fraction of the peak):
 
 | Radius | 50 % | 25 % | 10 % | 1 % |
 |--------|------|------|------|-----|
-| 25 | 5 px | 8 px | 13 px | 26 px |
-| 100 | 20 px | 34 px | 53 px | 105 px |
-| 400 | 81 px | 134 px | 211 px | 419 px |
+| 25 | 1 px | 2 px | 4 px | 13 px |
+| 100 | 1 px | 2 px | 5 px | 22 px |
+| 400 | 3 px | 5 px | 9 px | 51 px |
 
-so the Radius control reads as "where the glow ends", and the profile keeps a
-tight core (half brightness at a fifth of the radius) with a long tail. The
-numbers are half-widths of a symmetric profile; measuring outward from the peak
-instead makes them depend on where the source pixel sits inside its level-0
-block, which is a property of the measurement and not of the glow.
+These are far tighter than a Gaussian's because a bloom's peak is dominated by
+its finest octave — a point source produces a spike, which is exactly what
+glare does. They are not a measure of how far the glow reaches: **Radius sets
+the widest octave's σ**, so the halo around an extended shape carries out to
+roughly the radius, and the expanded bounds follow the widest octave rather
+than the mixture's RMS for the same reason.
 
 ### Energy
 

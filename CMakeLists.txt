@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(AbGlow VERSION 1.1.0 LANGUAGES CXX)
+project(ProfoundGlow VERSION 1.0.0 LANGUAGES CXX)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -26,7 +26,7 @@ option(ABGLOW_BUILD_TESTS "Build the core tests and the preview tool" ON)
 option(ABGLOW_ENABLE_AVX2 "Compile the image core with AVX2" OFF)
 
 set(ABGLOW_INSTALL_DIR "" CACHE PATH
-    "Where 'cmake --install' copies AbGlow.aex (defaults to the shared Adobe plug-in folder on Windows)")
+    "Where 'cmake --install' copies ProfoundGlow.aex (defaults to the shared Adobe plug-in folder on Windows)")
 
 # ---------------------------------------------------------------------------
 # Image processing core: no After Effects dependency, so it can be unit tested
@@ -76,7 +76,7 @@ if(ABGLOW_BUILD_PLUGIN)
             set(ABGLOW_BUILD_ID "${_abglow_git_sha}")
         endif()
     endif()
-    message(STATUS "AB Glow build id: ${ABGLOW_BUILD_ID}")
+    message(STATUS "Profound Glow build id: ${ABGLOW_BUILD_ID}")
 
     set(ABGLOW_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
     set(ABGLOW_PIPL_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_pipl.py")
@@ -97,7 +97,7 @@ if(ABGLOW_BUILD_PLUGIN)
     if(NOT _pipl_result EQUAL 0)
         message(FATAL_ERROR "generate_pipl.py failed: ${_pipl_error}")
     endif()
-    message(STATUS "AB Glow ${_pipl_output}")
+    message(STATUS "Profound Glow ${_pipl_output}")
 
     add_library(AbGlow MODULE
         src/plugin/AbGlowEntry.cpp
@@ -105,7 +105,7 @@ if(ABGLOW_BUILD_PLUGIN)
         src/plugin/AbGlowRender.cpp
         src/plugin/AeAdapters.cpp
         src/plugin/Diagnostics.cpp
-        "${ABGLOW_GENERATED_DIR}/AbGlow_PiPL.rc")
+        "${ABGLOW_GENERATED_DIR}/ProfoundGlow_PiPL.rc")
 
     target_link_libraries(AbGlow PRIVATE abglow_core)
     target_include_directories(AbGlow PRIVATE
@@ -115,18 +115,18 @@ if(ABGLOW_BUILD_PLUGIN)
     target_include_directories(AbGlow SYSTEM PRIVATE ${AE_SDK_INCLUDE_DIRS})
     target_compile_definitions(AbGlow PRIVATE AB_GLOW_BUILD_ID="${ABGLOW_BUILD_ID}")
 
-    # Writes a per-render log to %TEMP%/AbGlow-diag.log. Off by default; it is
+    # Writes a per-render log to %TEMP%/ProfoundGlow-diag.log. Off by default; it is
     # how a real After Effects session can be observed when the mock host in
     # tests/ cannot reproduce a report.
     option(ABGLOW_DIAGNOSTICS "Log what the host asks the plug-in for" OFF)
     if(ABGLOW_DIAGNOSTICS)
         target_compile_definitions(AbGlow PRIVATE ABGLOW_DIAGNOSTICS)
-        message(STATUS "AB Glow diagnostics: ON")
+        message(STATUS "Profound Glow diagnostics: ON")
     endif()
 
     set_target_properties(AbGlow PROPERTIES
         PREFIX ""
-        OUTPUT_NAME "AbGlow"
+        OUTPUT_NAME "ProfoundGlow"
         SUFFIX ".aex")
 
     if(WIN32)

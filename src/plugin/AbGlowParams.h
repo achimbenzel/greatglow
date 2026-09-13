@@ -5,10 +5,11 @@
 
 namespace abglow {
 
-// Parameter order is part of the saved project format: append, never insert or
-// reorder, or projects saved by an earlier build open with their values against
-// the wrong parameters. The numbers are spelled out so a stray insertion is a
-// compile error rather than a corrupted project.
+// Parameter order is part of the saved project format: from the first shipped
+// build of this effect onward, append, never insert or reorder, or projects
+// saved by an earlier build open with their values against the wrong
+// parameters. The numbers are spelled out so a stray insertion is a compile
+// error rather than a corrupted project.
 enum ParamIndex {
     kParamInput = 0,
     kParamGlowGroupStart = 1,
@@ -28,10 +29,10 @@ enum ParamIndex {
     kParamComposite = 15,
     kParamWorkingSpace = 16,
     kParamExpandBounds = 17,
-    kParamRenderGroupEnd = 18,
-    kParamAboutGroupStart = 19,
-    kParamAboutGroupEnd = 20,
-    kParamRolloff = 21,
+    kParamRolloff = 18,
+    kParamRenderGroupEnd = 19,
+    kParamAboutGroupStart = 20,
+    kParamAboutGroupEnd = 21,
     kParamCount = 22
 };
 

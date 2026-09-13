@@ -6,37 +6,37 @@
 namespace abglow {
 namespace {
 
-// The rung of the ladder the requested sigma is placed on. Fixing it - rather
-// than letting it fall wherever the powers of two happen to put it - is what
-// makes the kernel the same shape for every radius, resolution and quality.
-// Only the resolution the pyramid is sampled at changes.
-constexpr int kCentreRung = 2;
-
-// How wide the blur at each level is, in level pixels. This is the quality
-// control: a larger value means a finer pyramid for the same glow, so the
-// resampling filters contribute less and the glow's structure is better
-// resolved. Cost scales with its square.
-float TargetLevelSigma(Quality quality) {
+// How many octaves the glow spans. This is what makes it a bloom rather than a
+// blur: real veiling glare falls off as 1/r^2, and a sum of Gaussians whose
+// sigmas double reproduces that when every octave carries the same weight, so
+// the finest octaves build a bright tight core and the widest ones the halo.
+// Concentrating the weight on one scale instead gives a band-limited blur - the
+// source's structure disappears into a flat haze, and a small bright shape ends
+// up much dimmer than a large one at the same settings.
+int OctaveCount(Quality quality) {
     switch (quality) {
-        case Quality::kDraft: return 1.3f;
-        case Quality::kNormal: return 1.8f;
-        case Quality::kHigh: return 2.3f;
-        case Quality::kBest: return 2.8f;
+        case Quality::kDraft: return 5;
+        case Quality::kNormal: return 6;
+        case Quality::kHigh: return 7;
+        case Quality::kBest: return 8;
     }
-    return 1.8f;
+    return 6;
 }
 
-// The band the per-level blur is allowed to land in, relative to the target.
-// Rungs are a factor of two apart, so this is just wide enough that a rung
-// always fits; it only comes into play once base_scale has been clamped.
-constexpr float kLevelSigmaLow = 0.7f;
-constexpr float kLevelSigmaHigh = 1.5f;
+// How wide the blur at each level is, in level pixels. Quality picks the octave
+// count; this stays fixed so the step between octaves is always a factor of two.
+constexpr float kLevelSigma = 1.8f;
+
+// How the weight falls from the widest octave to the finest. 0 gives every
+// octave the same energy - the 1/r^2 of real glare, but so peaked that the
+// halo all but disappears; 2 equalises the octaves' peaks and is a plain blur.
+// 0.7 keeps individual highlights glowing on their own while leaving a halo
+// that reads at the radius asked for.
+constexpr float kOctaveTilt = 0.5f;
 
 // Variance the box downsample and the reconstruction filter add, in units of
-// the per-level blur's variance times target squared - so a coarse pyramid
-// widens the glow more than a fine one. Measured by fitting glow width against
-// 1 / target squared. Taking it back off the requested sigma is what stops the
-// Quality control from changing the size of the glow.
+// the per-level blur's variance times level sigma squared. Taking it back off
+// the requested sigma keeps the widest octave on the radius that was asked for.
 constexpr float kResamplingVariance = 0.32f;
 
 // How much wider level `level` is than the per-level blur, once the blurs of
@@ -63,9 +63,10 @@ float GlowPlan::EffectiveSigma() const {
 }
 
 float GlowPlan::Reach() const {
-    // Far enough out that the glow has fallen below ~1% of its peak; the
-    // expanded bounds have to cover everything that is still visible.
-    return EffectiveSigma() * 3.6f;
+    // The widest octave sets how far the glow carries; the mixture's RMS sigma
+    // is much smaller than that once the fine octaves are in it.
+    const int top = level_count > 0 ? level_count - 1 : 0;
+    return effective_sigma[top] * static_cast<float>(base_scale) * 3.2f;
 }
 
 int MinimumBaseScale(int width, int height, Quality quality) {
@@ -97,57 +98,39 @@ int MaximumBaseScale(float sigma, int layer_width, int layer_height) {
 GlowPlan MakeGlowPlan(float sigma, Quality quality, int layer_width, int layer_height, int min_base_scale) {
     GlowPlan plan;
 
-    // Pick the pyramid step so the centre rung lands on the requested sigma with
-    // the per-level blur the quality asks for. Any integer step works - it is
-    // just the size of the box the highlights are averaged over - so the step
-    // follows the radius continuously instead of jumping by powers of two.
-    const float target = TargetLevelSigma(quality);
-    const float spread = std::sqrt(1.0f + kResamplingVariance / (target * target));
-    const float nominal = sigma / spread;
-    const float desired = target * CascadeFactor(kCentreRung);
-    const int wanted = static_cast<int>(std::lround(nominal / desired));
-    // The memory floor outranks the resolution ceiling: running out of memory
-    // is worse than a coarse top octave.
+    const float spread = std::sqrt(1.0f + kResamplingVariance / (kLevelSigma * kLevelSigma));
+    const float nominal = std::max(sigma, 0.0f) / spread;
+
+    // The widest octave carries the requested sigma, and the ladder runs down
+    // from it in halves, so the finest is a fixed fraction of the radius - which
+    // is what keeps the glow the same shape at every render resolution.
+    int octaves = std::clamp(OctaveCount(quality), 1, kMaxPyramidLevels);
+    const float top = CascadeFactor(octaves - 1);
+
+    const int wanted = static_cast<int>(std::lround(nominal / (kLevelSigma * top)));
     const int floor_scale = std::max(min_base_scale, 1);
     const int ceiling_scale = std::max(MaximumBaseScale(sigma, layer_width, layer_height), floor_scale);
     plan.base_scale = std::clamp(std::max(wanted, floor_scale), 1, ceiling_scale);
 
-    const float sigma0 = std::max(0.35f, nominal / static_cast<float>(plan.base_scale));
+    // Solve for the per-level blur that lands the widest octave on the radius.
+    // Rounding base_scale to an integer moves it a little; shortening the ladder
+    // when the blur would be too small to be worth a pass keeps it in range.
+    float sigma0 = std::max(0.35f, nominal / static_cast<float>(plan.base_scale));
+    while (octaves > 1 && sigma0 / CascadeFactor(octaves - 1) < 0.6f) --octaves;
+    plan.level_sigma = sigma0 / CascadeFactor(octaves - 1);
+    plan.level_count = octaves;
 
-    // Solve for the per-level blur that puts rung `centre` on the requested
-    // sigma, so every plan samples the envelope at the same offsets. The rung
-    // only moves if base_scale hit a limit - a tiny radius, a huge one, or the
-    // level-0 pixel budget.
-    int centre = kCentreRung;
-    while (centre > 0 && sigma0 / CascadeFactor(centre) < target * kLevelSigmaLow) --centre;
-    while (centre < kMaxPyramidLevels - 2 && sigma0 / CascadeFactor(centre) > target * kLevelSigmaHigh) ++centre;
-    plan.level_sigma = sigma0 / CascadeFactor(centre);
-
-    // Only one octave above the centre. The envelope still has weight further
-    // out, but an octave that wide is comparable to the whole working buffer,
-    // so its blur degenerates into edge clamping - and how degenerate it is
-    // depends on the frame size, which made the same glow come out different
-    // sizes at different render resolutions. Everything kept here is resolved
-    // by a wide margin.
-    plan.level_count = std::clamp(centre + 2, 1, kMaxPyramidLevels);
-
-    // Log-normal envelope centred on the requested sigma.
-    constexpr float kOctaveSpread = 0.8f;
+    // Weight falls as (sigma_k / sigma_max)^kTilt. 0 is equal energy per octave,
+    // the 1/r^2 of real glare; 2 would equalise the peaks and be a plain blur.
     float sum = 0.0f;
+    const float widest = CascadedSigma(plan.level_sigma, plan.level_count - 1);
     for (int i = 0; i < plan.level_count; ++i) {
-        // Inflated by `spread`, so EffectiveSigma and Reach describe the glow
-        // the filters actually produce rather than the blur they were given.
         plan.effective_sigma[i] = CascadedSigma(plan.level_sigma, i) * spread;
-        const float octaves = std::log2(plan.effective_sigma[i] / (sigma0 * spread)) / kOctaveSpread;
-        const float w = std::exp(-0.5f * octaves * octaves);
+        const float w = std::pow(CascadedSigma(plan.level_sigma, i) / widest, kOctaveTilt);
         plan.weights[i] = w;
         sum += w;
     }
-    if (sum <= 0.0f) {
-        plan.weights[0] = 1.0f;
-    } else {
-        for (int i = 0; i < plan.level_count; ++i) plan.weights[i] /= sum;
-    }
+    for (int i = 0; i < plan.level_count; ++i) plan.weights[i] /= sum;
     return plan;
 }
 

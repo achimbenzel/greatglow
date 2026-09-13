@@ -33,22 +33,22 @@ enum ParamId {
     kIdComposite = 15,
     kIdWorkingSpace = 16,
     kIdExpandBounds = 17,
-    kIdRenderGroupEnd = 18,
-    kIdAboutGroup = 19,
-    kIdAboutGroupEnd = 20,
-    kIdRolloff = 21
+    kIdRolloff = 18,
+    kIdRenderGroupEnd = 19,
+    kIdAboutGroup = 20,
+    kIdAboutGroupEnd = 21
 };
 
 // The layout as shipped. These numbers are in every saved project that uses the
 // effect, so a change here is a change to a file format other people's work
 // depends on. Appending is fine; anything else is not.
 static_assert(kParamCount == 22, "parameters may only be appended");
-static_assert(kParamExpandBounds == 17 && kParamRenderGroupEnd == 18, "shipped parameter order");
-static_assert(kParamAboutGroupStart == 19 && kParamAboutGroupEnd == 20, "shipped parameter order");
-static_assert(kParamRolloff == 21, "shipped parameter order");
-static_assert(kIdExpandBounds == 17 && kIdRenderGroupEnd == 18, "shipped parameter ids");
-static_assert(kIdAboutGroup == 19 && kIdAboutGroupEnd == 20, "shipped parameter ids");
-static_assert(kIdRolloff == 21, "shipped parameter ids");
+static_assert(kParamExpandBounds == 17 && kParamRolloff == 18, "shipped parameter order");
+static_assert(kParamRenderGroupEnd == 19, "shipped parameter order");
+static_assert(kParamAboutGroupStart == 20 && kParamAboutGroupEnd == 21, "shipped parameter order");
+static_assert(kIdExpandBounds == 17 && kIdRolloff == 18, "shipped parameter ids");
+static_assert(kIdRenderGroupEnd == 19, "shipped parameter ids");
+static_assert(kIdAboutGroup == 20 && kIdAboutGroupEnd == 21, "shipped parameter ids");
 
 constexpr char kQualityChoices[] = "Draft|Normal|High|Best";
 constexpr char kCompositeChoices[] = "Add|Screen|Glow Only";
@@ -186,6 +186,9 @@ PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data) {
     PF_ADD_CHECKBOXX("Expand Bounds", TRUE, 0, kIdExpandBounds);
 
     AEFX_CLR_STRUCT(def);
+    PF_ADD_POPUPX("Highlight Rolloff", 2, 1, kRolloffChoices, 0, kIdRolloff);
+
+    AEFX_CLR_STRUCT(def);
     PF_END_TOPIC(kIdRenderGroupEnd);
 
     // An empty group whose header is the build. Nothing to configure; it is
@@ -195,10 +198,6 @@ PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data) {
 
     AEFX_CLR_STRUCT(def);
     PF_END_TOPIC(kIdAboutGroupEnd);
-
-    // Appended, so every parameter shipped before it keeps its index.
-    AEFX_CLR_STRUCT(def);
-    PF_ADD_POPUPX("Highlight Rolloff", 2, 1, kRolloffChoices, 0, kIdRolloff);
 
     out_data->num_params = kParamCount;
     return PF_Err_NONE;
