@@ -33,6 +33,12 @@ struct GlowSettings {
     WorkingSpace working_space = WorkingSpace::kAuto;
     HighlightRolloff rolloff = HighlightRolloff::kPreserveHue;
     float falloff = 1.4f;  // exponent n of the 1/r^n the glow follows
+    float aberration_r = 1.0f;  // per-channel radius scale: lens chromatic aberration
+    float aberration_g = 1.0f;
+    float aberration_b = 1.0f;
+    float saturation_bias = 0.0f;  // pushes the glow's own saturation
+    float source_opacity = 1.0f;
+    bool unmult = false;
     bool dither = true;
 };
 

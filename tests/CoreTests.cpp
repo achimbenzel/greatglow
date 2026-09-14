@@ -796,6 +796,67 @@ void TestScreenStaysPositive() {
     Check(lowest >= 0.0f, "screen never drives a channel negative");
 }
 
+// Screen's ceiling has to be reached smoothly. Clamping the two operands
+// before multiplying them changes the slope the moment the sum crosses 1.0,
+// and a slope that jumps along a smooth gradient is drawn as a contour line -
+// the hard-edged ring Screen used to put through a bright glow. The check is
+// on the second difference, which spikes at a kink; Add over the same picture
+// is the smooth reference. Screen only differs from Add where the source is
+// lit too, so the shape sits on an opaque field rather than on black.
+void TestScreenReachesItsCeilingSmoothly() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 900;
+    const int height = 200;
+    TestImage source(width, height, PixelDepth::kFloat32);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            // Field below the threshold, so only the bar emits.
+            source.SetPixel(x, y, x < 60 ? PixelF{4.0f, 4.0f, 4.0f, 1.0f} : PixelF{0.2f, 0.2f, 0.2f, 1.0f});
+        }
+    }
+
+    GlowSettings settings = DefaultSettings();
+    settings.threshold = 0.3f;
+    settings.radius_x = settings.radius_y = 220.0f;
+    settings.intensity = 6.0f;
+    settings.working_space = WorkingSpace::kLinear;
+    settings.dither = false;
+
+    // Worst second difference along the falling glow, divided by the first
+    // difference there so the two composites are on the same footing.
+    auto roughness = [&](CompositeMode mode) {
+        settings.composite = mode;
+        TestImage dest(width, height, PixelDepth::kFloat32);
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
+              "screen continuity render succeeds");
+
+        std::vector<float> line(static_cast<std::size_t>(width));
+        for (int x = 0; x < width; ++x) line[static_cast<std::size_t>(x)] = dest.GetPixel(x, height / 2).g;
+
+        float worst = 0.0f;
+        for (int x = 100; x < width - 20; ++x) {
+            const float a = line[static_cast<std::size_t>(x - 1)];
+            const float b = line[static_cast<std::size_t>(x)];
+            const float c = line[static_cast<std::size_t>(x + 1)];
+            const float slope = std::fabs(c - a) * 0.5f;
+            if (slope < 1.0e-6f) continue;
+            worst = std::max(worst, std::fabs(a - 2.0f * b + c) / slope);
+        }
+        return worst;
+    };
+
+    const float add = roughness(CompositeMode::kAdd);
+    const float screen = roughness(CompositeMode::kScreen);
+    Check(add > 0.0f, "the add reference has a gradient to compare against");
+    // The hard clamp scored 4.1x add here; the smooth join scores 0.94x.
+    Check(screen < add * 2.0f, "screen bends no harder than add where the glow crosses 1.0");
+}
+
 // Veiling glare follows a power law - the Stiles-Holladay form used in the CIE
 // disability-glare equations is 1/theta^2. A sum of Gaussians whose sigmas
 // double reproduces 1/r^n when the octave weights go as sigma^(2-n); this
@@ -920,6 +981,238 @@ void TestGlowHasALongTailWithoutHaze() {
         corner /= count;
         Check(core > 0.0 && corner < core * 0.002, "a large bright region leaves no flat haze");
     }
+}
+
+// A lens does not focus every wavelength at the same distance, so its veiling
+// glare is a slightly different size per channel. Multiply R/G/B scales each
+// channel's radius; the widths of the rendered channels have to follow.
+void TestGlowAberrationSpreadsTheChannels() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 512;
+    const int height = 256;
+    TestImage source(width, height, PixelDepth::kFloat32);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const bool inside = std::hypot(x - 256.0, y - 128.0) < 6.0;
+            source.SetPixel(x, y, inside ? PixelF{1.0f, 3.0f, 3.0f, 3.0f} : PixelF{0.0f, 0.0f, 0.0f, 0.0f});
+        }
+    }
+
+    GlowSettings settings = DefaultSettings();
+    settings.threshold = 0.2f;
+    settings.radius_x = settings.radius_y = 90.0f;
+    settings.intensity = 1.0f;
+    settings.composite = CompositeMode::kGlowOnly;
+    settings.aberration_r = 1.4f;
+    settings.aberration_b = 0.7f;
+
+    TestImage dest(width, height, PixelDepth::kFloat32);
+    GlowRender render;
+    render.source = source.View();
+    render.dest = dest.View();
+    Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk, "aberration render succeeds");
+
+    // Out on the tail, where the octave weighting separates the channels;
+    // near the core they are within a pixel of each other.
+    auto extent = [&](int channel) {
+        const PixelF peak = dest.GetPixel(256, 128);
+        const float top = channel == 0 ? peak.r : channel == 1 ? peak.g : peak.b;
+        for (int x = 256; x < width; ++x) {
+            const PixelF p = dest.GetPixel(x, 128);
+            const float v = channel == 0 ? p.r : channel == 1 ? p.g : p.b;
+            if (v < top * 0.02f) return x - 256;
+        }
+        return width;
+    };
+
+    const int red = extent(0);
+    const int green = extent(1);
+    const int blue = extent(2);
+    Check(red > green && green > blue, "a larger multiplier gives that channel a wider glow");
+    Check(red - blue >= 5, "the channels are separated by more than a rounding step");
+
+    // Same light spread over more area, so the wider channel peaks lower.
+    const PixelF peak = dest.GetPixel(256, 128);
+    Check(peak.r < peak.g && peak.g < peak.b, "a wider channel peaks lower for the same light");
+}
+
+// Source Opacity fades the layer the glow is composited over without touching
+// the glow itself, which is what makes it usable for glow-on-its-own looks
+// that still need the source's alpha.
+void TestSourceOpacityLeavesTheGlowAlone() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 256;
+    const int height = 128;
+    TestImage source(width, height, PixelDepth::kFloat32);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const bool inside = std::abs(x - 128) < 8 && std::abs(y - 64) < 8;
+            source.SetPixel(x, y, inside ? PixelF{1.0f, 2.0f, 2.0f, 2.0f} : PixelF{0.0f, 0.0f, 0.0f, 0.0f});
+        }
+    }
+
+    GlowSettings settings = DefaultSettings();
+    settings.threshold = 0.2f;
+    settings.radius_x = settings.radius_y = 40.0f;
+
+    auto render_with = [&](float opacity) {
+        settings.source_opacity = opacity;
+        TestImage dest(width, height, PixelDepth::kFloat32);
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
+              "source opacity render succeeds");
+        return dest;
+    };
+
+    const TestImage full = render_with(1.0f);
+    const TestImage none = render_with(0.0f);
+
+    // Far from the shape the output is glow only, so the two must agree.
+    const PixelF halo_full = full.GetPixel(128, 100);
+    const PixelF halo_none = none.GetPixel(128, 100);
+    CheckNear(halo_none.g, halo_full.g, halo_full.g * 0.001f + 1.0e-6f, "opacity leaves the halo untouched");
+    Check(halo_full.g > 0.0f, "there is a halo to compare");
+
+    // On the shape it has removed the source and left the glow.
+    const PixelF core_full = full.GetPixel(128, 64);
+    const PixelF core_none = none.GetPixel(128, 64);
+    Check(core_none.g < core_full.g - 1.5f, "opacity 0 takes the source out of the result");
+    Check(core_none.g > 0.0f, "the glow is still there without the source");
+}
+
+// Unmult is for footage delivered on black with no usable alpha: coverage comes
+// from how bright the pixel is rather than from an alpha that is 1 everywhere,
+// so a dim opaque field emits in proportion to its brightness.
+void TestUnmultReadsCoverageFromBrightness() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 128;
+    const int height = 128;
+    TestImage source(width, height, PixelDepth::kFloat32);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) source.SetPixel(x, y, PixelF{1.0f, 0.5f, 0.5f, 0.5f});
+    }
+
+    GlowSettings settings = DefaultSettings();
+    settings.threshold = 0.2f;
+    settings.threshold_softness = 0.0f;
+    settings.radius_x = settings.radius_y = 20.0f;
+    settings.composite = CompositeMode::kGlowOnly;
+
+    auto alpha_with = [&](bool unmult) {
+        settings.unmult = unmult;
+        TestImage dest(width, height, PixelDepth::kFloat32);
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk, "unmult render succeeds");
+        return dest.GetPixel(64, 64).a;
+    };
+
+    // contribution = (0.5 - 0.2) / 0.5 = 0.6; coverage is alpha (1.0) without
+    // unmult and the level (0.5) with it.
+    CheckNear(alpha_with(false), 0.6f, 0.03f, "without unmult an opaque field is fully covered");
+    CheckNear(alpha_with(true), 0.3f, 0.03f, "unmult reads coverage from the brightest channel");
+}
+
+// Saturation Bias weights the extraction by how colourful a pixel is, so a
+// saturated shape can be made to glow harder than a white one of the same
+// brightness - or the other way round.
+void TestSaturationBiasFavoursColour() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 384;
+    const int height = 160;
+    TestImage source(width, height, PixelDepth::kFloat32);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            PixelF p{0.0f, 0.0f, 0.0f, 0.0f};
+            if (std::abs(x - 96) < 10 && std::abs(y - 80) < 10) p = PixelF{1.0f, 2.0f, 0.0f, 0.0f};   // red
+            if (std::abs(x - 288) < 10 && std::abs(y - 80) < 10) p = PixelF{1.0f, 2.0f, 2.0f, 2.0f};  // white
+            source.SetPixel(x, y, p);
+        }
+    }
+
+    GlowSettings settings = DefaultSettings();
+    settings.threshold = 0.2f;
+    settings.radius_x = settings.radius_y = 40.0f;
+    settings.composite = CompositeMode::kGlowOnly;
+
+    auto ratio = [&](float bias) {
+        settings.saturation_bias = bias;
+        TestImage dest(width, height, PixelDepth::kFloat32);
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
+              "saturation bias render succeeds");
+        const float red = dest.GetPixel(96, 40).r;
+        const float white = dest.GetPixel(288, 40).r;
+        return white > 0.0f ? red / white : 0.0f;
+    };
+
+    const float neutral = ratio(0.0f);
+    const float favour_colour = ratio(1.0f);
+    const float favour_white = ratio(-0.6f);
+    Check(neutral > 0.0f, "both shapes glow at bias 0");
+    Check(favour_colour > neutral * 1.5f, "a positive bias lifts the saturated shape");
+    Check(favour_white < neutral * 0.7f, "a negative bias holds it back");
+}
+
+// An anisotropic radius stretches the glow, but not by as much as it is asked
+// to: the pyramid halves both axes together, so the resampling filter puts a
+// floor under the narrow axis that the per-axis blur cannot get below. A 4:1
+// radius renders about 2:1. This is the same limitation that keeps the glow
+// from being exactly round on non-square pixels, and it is why there is no
+// Aspect Ratio control yet - it would render about the square root of what its
+// number said. Decimating each axis on its own schedule is the fix.
+void TestAnisotropicRadius() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 512;
+    const int height = 512;
+    TestImage source(width, height, PixelDepth::kFloat32);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const bool inside = std::hypot(x - 256.0, y - 256.0) < 6.0;
+            source.SetPixel(x, y, inside ? PixelF{1.0f, 3.0f, 3.0f, 3.0f} : PixelF{0.0f, 0.0f, 0.0f, 0.0f});
+        }
+    }
+
+    GlowSettings settings = DefaultSettings();
+    settings.threshold = 0.2f;
+    settings.radius_x = 120.0f;
+    settings.radius_y = 30.0f;
+    settings.composite = CompositeMode::kGlowOnly;
+
+    TestImage dest(width, height, PixelDepth::kFloat32);
+    GlowRender render;
+    render.source = source.View();
+    render.dest = dest.View();
+    Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk, "anisotropic render succeeds");
+
+    const float peak = dest.GetPixel(256, 256).g;
+    auto extent = [&](int dx, int dy) {
+        for (int i = 1; i < 256; ++i) {
+            if (dest.GetPixel(256 + dx * i, 256 + dy * i).g < peak * 0.02f) return i;
+        }
+        return 256;
+    };
+    const float horizontal = static_cast<float>(extent(1, 0));
+    const float vertical = static_cast<float>(extent(0, 1));
+    Check(vertical > 0.0f, "the glow has a measurable height");
+    Check(horizontal / vertical > 1.8f, "an anisotropic radius stretches the glow");
+    // Tighten this once each axis is decimated on its own schedule.
+    Check(horizontal / vertical < 2.6f, "the shortfall against the requested 4:1 is unchanged");
 }
 
 void TestThresholdAndPassThrough() {
@@ -1186,8 +1479,14 @@ int main() {
     TestGlowIsBloomNotBlur();
     TestSmallAndLargeShapesGlowAlike();
     TestScreenStaysPositive();
+    TestScreenReachesItsCeilingSmoothly();
     TestFalloffFollowsThePowerLaw();
     TestGlowHasALongTailWithoutHaze();
+    TestGlowAberrationSpreadsTheChannels();
+    TestSourceOpacityLeavesTheGlowAlone();
+    TestUnmultReadsCoverageFromBrightness();
+    TestSaturationBiasFavoursColour();
+    TestAnisotropicRadius();
     TestThresholdAndPassThrough();
     TestTransparentInput();
     TestHdrNotClamped();

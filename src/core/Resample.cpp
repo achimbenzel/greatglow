@@ -46,7 +46,7 @@ void DownsampleHalf(const ImageF& src, ImageF& dst, TaskRunner& runner) {
     });
 }
 
-void UpsampleHalfAccumulate(const ImageF& src, ImageF& dst, float dst_weight, TaskRunner& runner) {
+void UpsampleHalfAccumulate(const ImageF& src, ImageF& dst, const PixelF& dst_weight, TaskRunner& runner) {
     if (src.Empty() || dst.Empty()) return;
 
     ParallelRows(runner, dst.height, [&](int begin, int end, int) {
@@ -72,10 +72,10 @@ void UpsampleHalfAccumulate(const ImageF& src, ImageF& dst, float dst_weight, Ta
                 const float w11 = fx * fy;
 
                 PixelF acc = out[x];
-                acc.a *= dst_weight;
-                acc.r *= dst_weight;
-                acc.g *= dst_weight;
-                acc.b *= dst_weight;
+                acc.a *= dst_weight.a;
+                acc.r *= dst_weight.r;
+                acc.g *= dst_weight.g;
+                acc.b *= dst_weight.b;
                 AccumulateScaled(acc, row0[sx0], w00);
                 AccumulateScaled(acc, row0[sx1], w01);
                 AccumulateScaled(acc, row1[sx0], w10);
@@ -86,16 +86,16 @@ void UpsampleHalfAccumulate(const ImageF& src, ImageF& dst, float dst_weight, Ta
     });
 }
 
-void ScaleInPlace(ImageF& image, float scale, TaskRunner& runner) {
+void ScaleInPlace(ImageF& image, const PixelF& scale, TaskRunner& runner) {
     if (image.Empty()) return;
     ParallelRows(runner, image.height, [&](int begin, int end, int) {
         for (int y = begin; y < end; ++y) {
             PixelF* row = image.Row(y);
             for (int x = 0; x < image.width; ++x) {
-                row[x].a *= scale;
-                row[x].r *= scale;
-                row[x].g *= scale;
-                row[x].b *= scale;
+                row[x].a *= scale.a;
+                row[x].r *= scale.r;
+                row[x].g *= scale.g;
+                row[x].b *= scale.b;
             }
         }
     });

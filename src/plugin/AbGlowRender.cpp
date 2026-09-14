@@ -166,6 +166,10 @@ PF_Err SmartPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtr
               params.settings.radius_x, params.settings.radius_y, params.settings.intensity,
               params.settings.exposure, params.settings.threshold, (int)params.settings.quality,
               params.expand_bounds ? 1 : 0);
+    diag::Log("  falloff=%.2f multiply=%.2f,%.2f,%.2f satbias=%.2f srcopacity=%.2f unmult=%d rolloff=%d",
+              params.settings.falloff, params.settings.aberration_r, params.settings.aberration_g,
+              params.settings.aberration_b, params.settings.saturation_bias, params.settings.source_opacity,
+              params.settings.unmult ? 1 : 0, (int)params.settings.rolloff);
     diag::Log("  request rect  = [%d %d %d %d]", (int)request.rect.left, (int)request.rect.top,
               (int)request.rect.right, (int)request.rect.bottom);
     diag::Log("  layer  rect   = [%d %d %d %d]", (int)layer_rect.left, (int)layer_rect.top, (int)layer_rect.right,

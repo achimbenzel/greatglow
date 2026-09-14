@@ -24,13 +24,16 @@ import sys
 PF_OutFlag_I_EXPAND_BUFFER = 1 << 9
 PF_OutFlag_DEEP_COLOR_AWARE = 1 << 25
 
+# Without this the host collapses every parameter group; with it the groups
+# follow their own flags, so only Advanced comes up closed.
+PF_OutFlag2_PARAM_GROUP_START_COLLAPSED_FLAG = 1 << 3
 PF_OutFlag2_SUPPORTS_SMART_RENDER = 1 << 10
 PF_OutFlag2_FLOAT_COLOR_AWARE = 1 << 12
 PF_OutFlag2_SUPPORTS_THREADED_RENDERING = 1 << 27
 
 OUT_FLAGS = PF_OutFlag_DEEP_COLOR_AWARE | PF_OutFlag_I_EXPAND_BUFFER
-OUT_FLAGS_2 = (PF_OutFlag2_SUPPORTS_SMART_RENDER | PF_OutFlag2_FLOAT_COLOR_AWARE |
-               PF_OutFlag2_SUPPORTS_THREADED_RENDERING)
+OUT_FLAGS_2 = (PF_OutFlag2_PARAM_GROUP_START_COLLAPSED_FLAG | PF_OutFlag2_SUPPORTS_SMART_RENDER |
+               PF_OutFlag2_FLOAT_COLOR_AWARE | PF_OutFlag2_SUPPORTS_THREADED_RENDERING)
 
 # Windows on Arm entry points need the CodeWinARM64 PiPL key, which only exists
 # in the AE 25.6 SDK and later. Set it from that SDK's AE_General.r to enable

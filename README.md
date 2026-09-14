@@ -116,6 +116,10 @@ Ship release builds from Visual Studio; mingw is for verification.
 | Falloff | 1.0 – 3.0 (1.4) | The exponent *n* of the 1/rⁿ the glow follows. 2.0 is the Stiles–Holladay inverse-square law that the CIE disability-glare equations use for real veiling glare. Lower puts more light at the wide scales, so Radius has more say in the glow's apparent size; higher concentrates it and makes individual highlights glow on their own. |
 | Highlight Rolloff | Preserve Hue / Clip | What to do where the glow leaves the output's range. Clipping each channel on its own reaches the ceiling at a different brightness per channel, so an over-driven saturated colour drifts to white; Preserve Hue rolls the whole triple off together and keeps the colour. 32 bpc output is never touched either way. |
 | Expand Bounds | on | Let the glow spread past the layer's edges by growing the layer's bounds. |
+| Saturation Bias | −100 – 200 % (0 %) | Weights the extraction by how colourful a pixel is. Positive makes a saturated highlight glow harder than a white one of the same brightness; negative does the reverse. |
+| Source Opacity | 0 – 100 % (100 %) | Fades the layer the glow sits on without touching the glow. At 0 % only the glow is left, but the source's alpha still shapes it — unlike Glow Only, which drops the source entirely. |
+| Unmult | off | For footage delivered on black with no usable alpha. Coverage is read from the brightest channel instead of from an alpha that is 1 everywhere, so dark areas emit nothing and a dim area emits in proportion to its brightness. |
+| Multiply Red / Green / Blue | 10 – 400 % (100 %) | Per-channel radius. A lens does not focus every wavelength at the same distance, so its veiling glare is a slightly different size per channel; pulling these apart gives the glow that chromatic fringe. The channel with the larger multiplier spreads wider and therefore peaks lower. |
 
 Radius is in full-resolution pixels: it is scaled automatically for draft
 resolutions and for non-square pixels, so a glow stays round and the same size
@@ -133,13 +137,18 @@ build from v1.0.0 onward opens correctly in any later build. The effect's match
 name is `ABBZ ProfoundGlow`; the earlier `AB Glow` is a separate effect, so old
 projects are untouched and both can be installed side by side.
 
-### Known limitation: non-square pixels
+### Known limitation: anisotropy
 
 The per-level Gaussian is anisotropic, but the pyramid's own resampling — the
 decimation and the reconstruction filter — is isotropic, and it contributes a
-fixed amount of blur in render pixels. On a non-square-pixel composition the
-narrower axis has a smaller sigma, so that fixed amount is a larger fraction of
-it, and the glow comes out wider along that axis in composition space:
+fixed amount of blur in render pixels. The narrower axis has a smaller sigma, so
+that fixed amount is a larger fraction of it and the glow comes out wider along
+that axis than asked for. Asking for a 4:1 glow renders about 2:1; roughly, the
+rendered ratio is the square root of the requested one, and how much is lost
+depends on the radius, so it cannot be calibrated away with a correction curve.
+
+The visible consequence is on non-square-pixel compositions, where the radius is
+divided by the pixel aspect to keep the glow round in composition space:
 
 | Pixel aspect | measured width ratio (should be 1.0) |
 |--------------|--------------------------------------|
@@ -147,8 +156,12 @@ it, and the glow comes out wider along that axis in composition space:
 | 1.46 | 1.049 |
 | 2.00 | 1.188 |
 
-Fixing it properly needs a separate pyramid step per axis. Square-pixel
-compositions — which is everything at 1080p, 4K and UHD — are unaffected.
+Square-pixel compositions — which is everything at 1080p, 4K and UHD — are
+unaffected. It is also why there is no Aspect Ratio control: a dial that
+rendered about the square root of its own number would be worse than none.
+
+The fix is to decimate each axis on its own schedule rather than halving both
+together, so an axis is only halved once its own blur can survive it.
 
 ## Testing
 

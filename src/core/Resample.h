@@ -9,8 +9,8 @@ namespace abglow {
 void DownsampleHalf(const ImageF& src, ImageF& dst, TaskRunner& runner);
 
 // dst = dst * dst_weight + bilinear upsample of the half-resolution `src`.
-void UpsampleHalfAccumulate(const ImageF& src, ImageF& dst, float dst_weight, TaskRunner& runner);
+void UpsampleHalfAccumulate(const ImageF& src, ImageF& dst, const PixelF& dst_weight, TaskRunner& runner);
 
-void ScaleInPlace(ImageF& image, float scale, TaskRunner& runner);
+void ScaleInPlace(ImageF& image, const PixelF& scale, TaskRunner& runner);
 
 }  // namespace abglow

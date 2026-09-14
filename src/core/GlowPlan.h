@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Pixel.h"
+
 namespace abglow {
 
 enum class Quality { kDraft = 0, kNormal = 1, kHigh = 2, kBest = 3 };
@@ -15,6 +17,10 @@ struct GlowPlan {
     int level_count = 1;
     float level_sigma = 1.8f;  // blur sigma applied within each level
     float weights[kMaxPyramidLevels] = {};
+    // Per-channel weights. Scaling a channel's octave weights towards the wide
+    // end is the same as giving it a larger radius, which is what chromatic
+    // aberration in a lens does.
+    PixelF channel_weights[kMaxPyramidLevels] = {};
     float effective_sigma[kMaxPyramidLevels] = {};  // in level-0 pixels
 
     // Sigma of the combined multi-scale kernel, in render pixels.
@@ -41,6 +47,7 @@ int MaximumBaseScale(float sigma, int layer_width, int layer_height);
 // light at the wide scales, which is what gives Radius authority over the
 // glow's apparent size.
 GlowPlan MakeGlowPlan(float sigma, Quality quality, int layer_width, int layer_height, int min_base_scale = 1,
-                      float falloff = 1.4f);
+                      float falloff = 1.4f, float red_scale = 1.0f,
+                      float green_scale = 1.0f, float blue_scale = 1.0f);
 
 }  // namespace abglow

@@ -8,7 +8,8 @@
 // so both read the flags from the generated header.
 static_assert(AB_GLOW_OUT_FLAGS == (PF_OutFlag_DEEP_COLOR_AWARE | PF_OutFlag_I_EXPAND_BUFFER),
               "PiPL out flags are out of sync with GlobalSetup");
-static_assert(AB_GLOW_OUT_FLAGS2 == (PF_OutFlag2_SUPPORTS_SMART_RENDER | PF_OutFlag2_FLOAT_COLOR_AWARE |
+static_assert(AB_GLOW_OUT_FLAGS2 == (PF_OutFlag2_PARAM_GROUP_START_COLLAPSED_FLAG |
+                                     PF_OutFlag2_SUPPORTS_SMART_RENDER | PF_OutFlag2_FLOAT_COLOR_AWARE |
                                      PF_OutFlag2_SUPPORTS_THREADED_RENDERING),
               "PiPL out flags 2 are out of sync with GlobalSetup");
 

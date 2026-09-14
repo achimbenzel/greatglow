@@ -37,13 +37,21 @@ enum ParamId {
     kIdRenderGroupEnd = 19,
     kIdAboutGroup = 20,
     kIdAboutGroupEnd = 21,
-    kIdFalloff = 22
+    kIdFalloff = 22,
+    kIdAdvancedGroup = 23,
+    kIdSaturationBias = 24,
+    kIdSourceOpacity = 25,
+    kIdUnmult = 26,
+    kIdMultiplyRed = 27,
+    kIdMultiplyGreen = 28,
+    kIdMultiplyBlue = 29,
+    kIdAdvancedGroupEnd = 30
 };
 
 // The layout as shipped. These numbers are in every saved project that uses the
 // effect, so a change here is a change to a file format other people's work
 // depends on. Appending is fine; anything else is not.
-static_assert(kParamCount == 23, "parameters may only be appended");
+static_assert(kParamCount == 31, "parameters may only be appended");
 static_assert(kParamExpandBounds == 17 && kParamRolloff == 18, "shipped parameter order");
 static_assert(kParamRenderGroupEnd == 19, "shipped parameter order");
 static_assert(kParamAboutGroupStart == 20 && kParamAboutGroupEnd == 21, "shipped parameter order");
@@ -51,6 +59,10 @@ static_assert(kIdExpandBounds == 17 && kIdRolloff == 18, "shipped parameter ids"
 static_assert(kIdRenderGroupEnd == 19, "shipped parameter ids");
 static_assert(kIdAboutGroup == 20 && kIdAboutGroupEnd == 21, "shipped parameter ids");
 static_assert(kParamFalloff == 22 && kIdFalloff == 22, "shipped parameter order and id");
+static_assert(kParamAdvancedGroupStart == 23 && kIdAdvancedGroup == 23, "shipped parameter order and id");
+static_assert(kParamUnmult == 26 && kIdUnmult == 26, "shipped parameter order and id");
+static_assert(kParamMultiplyBlue == 29 && kIdMultiplyBlue == 29, "shipped parameter order and id");
+static_assert(kParamAdvancedGroupEnd == 30 && kIdAdvancedGroupEnd == 30, "shipped parameter order and id");
 
 constexpr char kQualityChoices[] = "Draft|Normal|High|Best";
 constexpr char kCompositeChoices[] = "Add|Screen|Glow Only";
@@ -201,9 +213,40 @@ PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data) {
     AEFX_CLR_STRUCT(def);
     PF_END_TOPIC(kIdAboutGroupEnd);
 
-    // Appended, because the layout of everything above it has shipped.
+    // Appended, because the layout of everything above it has shipped. Anything
+    // new lands here too, below the About header, rather than next to the
+    // controls it belongs with: moving it would move every saved value.
     AEFX_CLR_STRUCT(def);
     PF_ADD_FLOAT_SLIDERX("Falloff", 1.0f, 3.0f, 1.0f, 3.0f, 1.4f, PF_Precision_HUNDREDTHS, 0, 0, kIdFalloff);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPICX("Advanced", PF_ParamFlag_START_COLLAPSED, kIdAdvancedGroup);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Saturation Bias", -100.0f, 200.0f, -100.0f, 100.0f, 0.0f, PF_Precision_TENTHS,
+                         PF_ValueDisplayFlag_PERCENT, 0, kIdSaturationBias);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Source Opacity", 0.0f, 100.0f, 0.0f, 100.0f, 100.0f, PF_Precision_TENTHS,
+                         PF_ValueDisplayFlag_PERCENT, 0, kIdSourceOpacity);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_CHECKBOXX("Unmult", FALSE, 0, kIdUnmult);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Multiply Red", 10.0f, 400.0f, 50.0f, 200.0f, 100.0f, PF_Precision_TENTHS,
+                         PF_ValueDisplayFlag_PERCENT, 0, kIdMultiplyRed);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Multiply Green", 10.0f, 400.0f, 50.0f, 200.0f, 100.0f, PF_Precision_TENTHS,
+                         PF_ValueDisplayFlag_PERCENT, 0, kIdMultiplyGreen);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Multiply Blue", 10.0f, 400.0f, 50.0f, 200.0f, 100.0f, PF_Precision_TENTHS,
+                         PF_ValueDisplayFlag_PERCENT, 0, kIdMultiplyBlue);
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kIdAdvancedGroupEnd);
 
     out_data->num_params = kParamCount;
     return PF_Err_NONE;
@@ -227,7 +270,13 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     int working_space = 1;
     int rolloff = 1;
     float falloff = 1.4f;
+    float saturation_bias = 0.0f;
+    float source_opacity = 100.0f;
+    float multiply_r = 100.0f;
+    float multiply_g = 100.0f;
+    float multiply_b = 100.0f;
     bool expand_bounds = true;
+    bool unmult = false;
 
     if (!err) err = CheckoutFloat(in_data, kParamThreshold, &threshold);
     if (!err) err = CheckoutFloat(in_data, kParamSoftness, &softness);
@@ -243,6 +292,12 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     if (!err) err = CheckoutPopup(in_data, kParamRolloff, &rolloff);
     if (!err) err = CheckoutFloat(in_data, kParamFalloff, &falloff);
     if (!err) err = CheckoutCheckbox(in_data, kParamExpandBounds, &expand_bounds);
+    if (!err) err = CheckoutFloat(in_data, kParamSaturationBias, &saturation_bias);
+    if (!err) err = CheckoutFloat(in_data, kParamSourceOpacity, &source_opacity);
+    if (!err) err = CheckoutCheckbox(in_data, kParamUnmult, &unmult);
+    if (!err) err = CheckoutFloat(in_data, kParamMultiplyRed, &multiply_r);
+    if (!err) err = CheckoutFloat(in_data, kParamMultiplyGreen, &multiply_g);
+    if (!err) err = CheckoutFloat(in_data, kParamMultiplyBlue, &multiply_b);
     if (err) return err;
 
     // Slider distances are authored at full resolution; convert to the pixels
@@ -271,6 +326,12 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     settings.working_space = static_cast<WorkingSpace>(std::clamp(working_space - 1, 0, 2));
     settings.rolloff = static_cast<HighlightRolloff>(std::clamp(rolloff - 1, 0, 1));
     settings.falloff = std::clamp(falloff, 1.0f, 3.0f);
+    settings.aberration_r = std::clamp(multiply_r * 0.01f, 0.1f, 4.0f);
+    settings.aberration_g = std::clamp(multiply_g * 0.01f, 0.1f, 4.0f);
+    settings.aberration_b = std::clamp(multiply_b * 0.01f, 0.1f, 4.0f);
+    settings.saturation_bias = std::clamp(saturation_bias * 0.01f, -1.0f, 2.0f);
+    settings.source_opacity = std::clamp(source_opacity * 0.01f, 0.0f, 1.0f);
+    settings.unmult = unmult;
     params.expand_bounds = expand_bounds;
 
     *out_params = params;

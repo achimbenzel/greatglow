@@ -21,6 +21,8 @@ constexpr float kTransparent = 1.0e-6f;
 struct Threshold {
     float level = 0.0f;
     float knee = 0.0f;
+    float saturation_bias = 0.0f;
+    bool unmult = false;
 };
 
 struct PixelPoint {
@@ -59,8 +61,8 @@ inline PixelF LinearizePremultiplied(const PixelF& p, const TransferFunction& tr
 // resolution - 8% less at Quarter on anti-aliased text.
 inline PixelF ExtractHighlight(const PixelF& linear, const Threshold& threshold) {
     // Premultiplied pixels with no alpha emit no light, whatever RGB they carry.
-    if (linear.a <= kTransparent) return PixelF{0.0f, 0.0f, 0.0f, 0.0f};
-    const float inv_coverage = linear.a >= kOpaque ? 1.0f : 1.0f / linear.a;
+    if (linear.a <= kTransparent && !threshold.unmult) return PixelF{0.0f, 0.0f, 0.0f, 0.0f};
+    const float inv_coverage = linear.a >= kOpaque ? 1.0f : 1.0f / std::max(linear.a, kTransparent);
     const float level = std::max(linear.r, std::max(linear.g, linear.b)) * inv_coverage;
     if (level <= 0.0f) return PixelF{0.0f, 0.0f, 0.0f, 0.0f};
 
@@ -72,9 +74,18 @@ inline PixelF ExtractHighlight(const PixelF& linear, const Threshold& threshold)
     }
     if (above <= 0.0f) return PixelF{0.0f, 0.0f, 0.0f, 0.0f};
 
-    const float contribution = above / std::max(level, 1.0e-6f);
-    return PixelF{linear.a * contribution, linear.r * contribution, linear.g * contribution,
-                  linear.b * contribution};
+    float contribution = above / std::max(level, 1.0e-6f);
+    if (threshold.saturation_bias != 0.0f) {
+        const float low = std::min(linear.r, std::min(linear.g, linear.b)) * inv_coverage;
+        const float saturation = level > 0.0f ? 1.0f - low / level : 0.0f;
+        contribution *= std::max(0.0f, 1.0f + threshold.saturation_bias * saturation);
+    }
+    // Unmult reads coverage from the brightest channel, so black is treated as
+    // empty rather than as an opaque black that emits nothing.
+    const float coverage = threshold.unmult ? std::clamp(level, 0.0f, 1.0f) : linear.a;
+    return PixelF{coverage * contribution, linear.r * contribution * (threshold.unmult ? inv_coverage * coverage : 1.0f),
+                  linear.g * contribution * (threshold.unmult ? inv_coverage * coverage : 1.0f),
+                  linear.b * contribution * (threshold.unmult ? inv_coverage * coverage : 1.0f)};
 }
 
 // Taps of a tent prefilter for one axis. Decimating with a box places each
@@ -269,6 +280,7 @@ AxisTaps MakeTaps(float coordinate, int limit, UpsampleFilter filter) {
 
 struct CompositeContext {
     CompositeMode mode = CompositeMode::kAdd;
+    float source_opacity = 1.0f;
     const TransferFunction* transfer = nullptr;
     bool dither = false;
     bool rolloff = false;
@@ -350,17 +362,30 @@ inline void StorePixel16(void* row, int x, const PixelF& encoded, float dither) 
 }
 
 // Combines source and glow in linear light and re-encodes for the output depth.
-// Screen only means anything in [0,1]: a + b - a*b turns back down above it and
-// goes negative, which put black pixels in the brightest part of a glow. The
-// part of each value that fits is screened, and whatever is outside carries
-// across additively - exact inside the range, monotonic outside it.
-inline float ScreenChannel(float a, float b) {
-    const float a_in = std::clamp(a, 0.0f, 1.0f);
-    const float b_in = std::clamp(b, 0.0f, 1.0f);
-    return a_in + b_in - a_in * b_in + (a - a_in) + (b - b_in);
+// Identity below the knee, asymptotic to 1 above it, C1 at the join. Used
+// wherever a value has to stop at 1 without the result showing where it did.
+inline float SoftSaturate(float x, float knee) {
+    if (!(x > knee)) return x < 0.0f ? 0.0f : x;
+    const float head = 1.0f - knee;
+    return knee + head * (1.0f - std::exp(-(x - knee) / head));
 }
 
-inline PixelF CombinePixel(const PixelF& source_linear, const PixelF& glow, const CompositeContext& ctx) {
+// Screen only means anything in [0,1]: a + b - a*b turns back down above it and
+// goes negative. Saturating the product's terms keeps it monotonic, but a hard
+// clamp there puts a kink where the glow crosses 1 - a derivative discontinuity
+// along a contour, which draws a visible edge through the glow. Rolling them
+// off smoothly leaves the operator exact below the knee and C1 everywhere.
+inline float ScreenChannel(float a, float b) {
+    constexpr float kKnee = 0.75f;
+    return a + b - SoftSaturate(a, kKnee) * SoftSaturate(b, kKnee);
+}
+
+inline PixelF CombinePixel(const PixelF& raw_source, const PixelF& glow, const CompositeContext& ctx) {
+    const float opacity = ctx.source_opacity;
+    const PixelF source_linear = opacity >= 1.0f
+                                     ? raw_source
+                                     : PixelF{raw_source.a * opacity, raw_source.r * opacity,
+                                              raw_source.g * opacity, raw_source.b * opacity};
     PixelF lit{};
     switch (ctx.mode) {
         case CompositeMode::kGlowOnly:
@@ -393,9 +418,7 @@ inline void RolloffHighlights(float& r, float& g, float& b) {
     constexpr float kKnee = 0.75f;
     const float m = std::max(r, std::max(g, b));
     if (!(m > kKnee)) return;
-    const float head = 1.0f - kKnee;
-    const float shaped = kKnee + head * (1.0f - std::exp(-(m - kKnee) / head));
-    const float scale = shaped / m;
+    const float scale = SoftSaturate(m, kKnee) / m;
     r *= scale;
     g *= scale;
     b *= scale;
@@ -604,7 +627,7 @@ GlowPlan PlanForRender(const GlowSettings& settings, const GlowRender& render) {
     const int min_scale = MinimumBaseScale(render.source.width + 2 * budget_reach,
                                            render.source.height + 2 * budget_reach, settings.quality);
     return MakeGlowPlan(sigma, settings.quality, render.source.width, render.source.height, min_scale,
-                        settings.falloff);
+                        settings.falloff, settings.aberration_r, settings.aberration_g, settings.aberration_b);
 }
 
 GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Allocator& allocator,
@@ -660,6 +683,8 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
     Threshold threshold;
     threshold.level = transfer.Decode(std::max(0.0f, settings.threshold));
     threshold.knee = threshold.level * std::clamp(settings.threshold_softness, 0.0f, 1.0f);
+    threshold.saturation_bias = settings.saturation_bias;
+    threshold.unmult = settings.unmult;
 
     ImageF& level0 = levels[0].View();
     if (render.source.Empty()) {
@@ -688,9 +713,9 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
 
     // Collapse the octaves back down, weighting each one.
     const int top = plan.level_count - 1;
-    ScaleInPlace(levels[top].View(), plan.weights[top], runner);
+    ScaleInPlace(levels[top].View(), plan.channel_weights[top], runner);
     for (int i = top - 1; i >= 0; --i) {
-        UpsampleHalfAccumulate(levels[i + 1].View(), levels[i].View(), plan.weights[i], runner);
+        UpsampleHalfAccumulate(levels[i + 1].View(), levels[i].View(), plan.channel_weights[i], runner);
     }
 
     // Exposure, intensity, saturation and tint are linear, so they can run on
@@ -713,6 +738,7 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
     ctx.mode = settings.composite;
     ctx.transfer = &transfer;
     ctx.dither = settings.dither && render.dest.depth != PixelDepth::kFloat32;
+    ctx.source_opacity = std::clamp(settings.source_opacity, 0.0f, 1.0f);
     ctx.rolloff = settings.rolloff == HighlightRolloff::kPreserveHue &&
                   render.dest.depth != PixelDepth::kFloat32;
     ctx.filter = settings.quality >= Quality::kHigh ? UpsampleFilter::kCubic : UpsampleFilter::kQuadratic;

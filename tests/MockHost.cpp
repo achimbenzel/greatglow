@@ -321,6 +321,7 @@ struct RenderOptions {
     bool expand_bounds = true;
     int quality = 2;  // 1 based popup value
     std::string label;
+    bool advanced = false;  // exercise the appended Advanced group
 };
 
 // Indices must match ParamIndex in AbGlowParams.h.
@@ -335,7 +336,14 @@ enum {
     kIndexQuality = 14,
     kIndexComposite = 15,
     kIndexWorkingSpace = 16,
-    kIndexExpandBounds = 17
+    kIndexExpandBounds = 17,
+    kIndexSaturationBias = 24,
+    kIndexSourceOpacity = 25,
+    kIndexUnmult = 26,
+    kIndexMultiplyRed = 27,
+    kIndexMultiplyGreen = 28,
+    kIndexMultiplyBlue = 29,
+    kParamCountAsShipped = 31
 };
 
 bool RunRender(EffectMainFn effect_main, const RenderOptions& options, const std::string& out_dir) {
@@ -356,6 +364,9 @@ bool RunRender(EffectMainFn effect_main, const RenderOptions& options, const std
     Check(err == PF_Err_NONE, "params setup succeeds");
     Check(out_data.num_params == static_cast<A_long>(host.params.size()) + 1,
           "reported parameter count matches the parameters added");
+    // Saved projects address parameters by position, so the count is part of
+    // the file format: it may grow, never shrink or shuffle.
+    Check(out_data.num_params == kParamCountAsShipped, "the shipped parameter layout is unchanged");
 
     SetFloatParam(&host, kIndexThreshold - 1, options.threshold);
     SetFloatParam(&host, kIndexSoftness - 1, 40.0f);
@@ -368,6 +379,14 @@ bool RunRender(EffectMainFn effect_main, const RenderOptions& options, const std
     SetPopupParam(&host, kIndexComposite - 1, 1);
     SetPopupParam(&host, kIndexWorkingSpace - 1, 1);
     SetCheckboxParam(&host, kIndexExpandBounds - 1, options.expand_bounds);
+    if (options.advanced) {
+        SetFloatParam(&host, kIndexSaturationBias - 1, 60.0f);
+        SetFloatParam(&host, kIndexSourceOpacity - 1, 70.0f);
+        SetCheckboxParam(&host, kIndexUnmult - 1, true);
+        SetFloatParam(&host, kIndexMultiplyRed - 1, 140.0f);
+        SetFloatParam(&host, kIndexMultiplyGreen - 1, 100.0f);
+        SetFloatParam(&host, kIndexMultiplyBlue - 1, 70.0f);
+    }
 
     host.layer_rect.left = 0;
     host.layer_rect.top = 0;
@@ -483,6 +502,7 @@ int main(int argc, char** argv) {
         {32, 480, 270, 400.0f, 0.5f, true, 4, "large_radius"},
         {8, 480, 270, 60.0f, 0.5f, false, 1, "no_expand"},
         {8, 97, 61, 30.0f, 0.2f, true, 3, "odd_size"},
+        {32, 480, 270, 60.0f, 0.5f, true, 2, "advanced", true},
     };
 
     for (const RenderOptions& options : cases) {

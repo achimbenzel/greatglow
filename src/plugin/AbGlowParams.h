@@ -34,7 +34,15 @@ enum ParamIndex {
     kParamAboutGroupStart = 20,
     kParamAboutGroupEnd = 21,
     kParamFalloff = 22,
-    kParamCount = 23
+    kParamAdvancedGroupStart = 23,
+    kParamSaturationBias = 24,
+    kParamSourceOpacity = 25,
+    kParamUnmult = 26,
+    kParamMultiplyRed = 27,
+    kParamMultiplyGreen = 28,
+    kParamMultiplyBlue = 29,
+    kParamAdvancedGroupEnd = 30,
+    kParamCount = 31
 };
 
 PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data);

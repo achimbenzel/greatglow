@@ -108,7 +108,7 @@ int MaximumBaseScale(float sigma, int layer_width, int layer_height) {
 }
 
 GlowPlan MakeGlowPlan(float sigma, Quality quality, int layer_width, int layer_height, int min_base_scale,
-                      float falloff) {
+                      float falloff, float red_scale, float green_scale, float blue_scale) {
     GlowPlan plan;
 
     const float spread = std::sqrt(1.0f + kResamplingVariance / (kLevelSigma * kLevelSigma));
@@ -151,6 +151,32 @@ GlowPlan MakeGlowPlan(float sigma, Quality quality, int layer_width, int layer_h
         sum += w;
     }
     for (int i = 0; i < plan.level_count; ++i) plan.weights[i] /= sum;
+
+    // A channel scaled by s gets the weights it would have had at radius s,
+    // which is the octave ladder shifted by log2(s) - interpolated, since the
+    // shift is not a whole number of octaves.
+    const float scales[3] = {std::max(red_scale, 0.05f), std::max(green_scale, 0.05f),
+                             std::max(blue_scale, 0.05f)};
+    float channel_sum[3] = {0.0f, 0.0f, 0.0f};
+    for (int i = 0; i < plan.level_count; ++i) {
+        for (int c = 0; c < 3; ++c) {
+            const float shifted = std::log2(CascadedSigma(plan.level_sigma, i) / scales[c]);
+            const float base = std::log2(plan.level_sigma);
+            const float pos = std::clamp((shifted - base) / std::log2(2.0f), 0.0f, static_cast<float>(plan.level_count - 1));
+            const int lo = static_cast<int>(pos);
+            const int hi = std::min(lo + 1, plan.level_count - 1);
+            const float f = pos - static_cast<float>(lo);
+            const float w = plan.weights[lo] * (1.0f - f) + plan.weights[hi] * f;
+            channel_sum[c] += w;
+            (c == 0 ? plan.channel_weights[i].r : c == 1 ? plan.channel_weights[i].g : plan.channel_weights[i].b) = w;
+        }
+        plan.channel_weights[i].a = plan.weights[i];
+    }
+    for (int i = 0; i < plan.level_count; ++i) {
+        if (channel_sum[0] > 0.0f) plan.channel_weights[i].r /= channel_sum[0];
+        if (channel_sum[1] > 0.0f) plan.channel_weights[i].g /= channel_sum[1];
+        if (channel_sum[2] > 0.0f) plan.channel_weights[i].b /= channel_sum[2];
+    }
     return plan;
 }
 
