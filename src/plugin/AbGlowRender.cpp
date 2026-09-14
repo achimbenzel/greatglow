@@ -18,7 +18,10 @@ constexpr A_long kProbeCheckoutId = 1;
 constexpr A_long kInputCheckoutId = 2;
 
 // Guard rail so an extreme radius cannot ask After Effects for an absurd buffer.
-constexpr A_long kMaxBoundsExpansion = 2000;
+// A large radius wants a lot of room: at radius 1240 the glow reaches 2542 px,
+// and clipping that cut a fifth off its extent. The buffer this allows is big
+// but still one After Effects will hand over.
+constexpr A_long kMaxBoundsExpansion = 3000;
 
 struct PreRenderData {
     EffectParams params;

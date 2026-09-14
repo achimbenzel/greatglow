@@ -129,7 +129,28 @@ haze-free, but it puts the bounds at 4.1× the radius, which is a 92 MP buffer o
 a 4K comp and past the expansion cap anyway. One octave puts them at 2.05× and
 costs about 1.5× the render time, all of it in the larger composite.
 
-`TestFalloffFollowsThePowerLaw` holds it to ±0.15. An earlier hand-tuned weight
+**The law is cut off at the radius.** A power law is scale-free — 1/rⁿ has no
+characteristic size — so weighting the octaves by it alone left Radius changing
+the glow's brightness and barely its size. The weights are
+`(σ_k/σ_R)^a · e^(−σ_k/σ_R)`: a gamma spectrum, power law below the radius and
+exponential above it. `a` is fitted so the rendered skirt lands on the Falloff
+the user asked for — the pure `2−n` would be right without the cutoff, but the
+cutoff steepens the profile below it too.
+
+Falloff then trades two things against each other, measured:
+
+| Falloff | Radius authority | Speck contrast | 80 px vs 600 px shape |
+|---------|------------------|----------------|------------------------|
+| 1.0 | 2.06× | 0.051 | 35% |
+| **1.4** (default) | **1.81×** | **0.083** | **20%** |
+| 2.0 (inverse-square) | 1.53× | 0.162 | 7% |
+
+Lower puts more light at the wide scales, so Radius has more say in the glow's
+apparent size; higher concentrates it and makes individual highlights glow on
+their own. The default sits where the glow is about the size the octave-per-
+scale predecessor produced while keeping most of the bloom character.
+
+`TestFalloffFollowsThePowerLaw` holds the fit to ±0.15 below the cutoff. An earlier hand-tuned weight
 tilt measured 1.61 — far shallower than real glare, which is why the glow read
 as haze rather than as light.
 

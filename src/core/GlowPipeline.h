@@ -32,7 +32,7 @@ struct GlowSettings {
     CompositeMode composite = CompositeMode::kAdd;
     WorkingSpace working_space = WorkingSpace::kAuto;
     HighlightRolloff rolloff = HighlightRolloff::kPreserveHue;
-    float falloff = 2.0f;  // exponent n of the 1/r^n the glow follows
+    float falloff = 1.4f;  // exponent n of the 1/r^n the glow follows
     bool dither = true;
 };
 

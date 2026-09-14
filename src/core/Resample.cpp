@@ -19,27 +19,28 @@ inline void AccumulateScaled(PixelF& dst, const PixelF& src, float w) {
 
 }  // namespace
 
+// [1 3 3 1]/8 is the tent over two cells. A 2x2 box carries the light but not
+// its centre of mass, so content crossing the grid makes each octave lead and
+// lag; with a deep ladder those errors accumulate into visible wander.
 void DownsampleHalf(const ImageF& src, ImageF& dst, TaskRunner& runner) {
     if (src.Empty() || dst.Empty()) return;
 
+    static constexpr float kTent[4] = {0.125f, 0.375f, 0.375f, 0.125f};
+
     ParallelRows(runner, dst.height, [&](int begin, int end, int) {
         for (int y = begin; y < end; ++y) {
-            const int sy0 = ClampInt(y * 2, 0, src.height - 1);
-            const int sy1 = ClampInt(y * 2 + 1, 0, src.height - 1);
-            const PixelF* row0 = src.Row(sy0);
-            const PixelF* row1 = src.Row(sy1);
+            const PixelF* rows[4];
+            for (int j = 0; j < 4; ++j) rows[j] = src.Row(ClampInt(y * 2 - 1 + j, 0, src.height - 1));
             PixelF* out = dst.Row(y);
             for (int x = 0; x < dst.width; ++x) {
-                const int sx0 = ClampInt(x * 2, 0, src.width - 1);
-                const int sx1 = ClampInt(x * 2 + 1, 0, src.width - 1);
-                const PixelF& p00 = row0[sx0];
-                const PixelF& p01 = row0[sx1];
-                const PixelF& p10 = row1[sx0];
-                const PixelF& p11 = row1[sx1];
-                out[x] = PixelF{(p00.a + p01.a + p10.a + p11.a) * 0.25f,
-                                (p00.r + p01.r + p10.r + p11.r) * 0.25f,
-                                (p00.g + p01.g + p10.g + p11.g) * 0.25f,
-                                (p00.b + p01.b + p10.b + p11.b) * 0.25f};
+                int sx[4];
+                for (int i = 0; i < 4; ++i) sx[i] = ClampInt(x * 2 - 1 + i, 0, src.width - 1);
+                PixelF acc{0.0f, 0.0f, 0.0f, 0.0f};
+                for (int j = 0; j < 4; ++j) {
+                    const PixelF* row = rows[j];
+                    for (int i = 0; i < 4; ++i) AccumulateScaled(acc, row[sx[i]], kTent[j] * kTent[i]);
+                }
+                out[x] = acc;
             }
         }
     });

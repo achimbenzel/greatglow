@@ -203,7 +203,7 @@ PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data) {
 
     // Appended, because the layout of everything above it has shipped.
     AEFX_CLR_STRUCT(def);
-    PF_ADD_FLOAT_SLIDERX("Falloff", 1.5f, 3.0f, 1.5f, 3.0f, 2.0f, PF_Precision_HUNDREDTHS, 0, 0, kIdFalloff);
+    PF_ADD_FLOAT_SLIDERX("Falloff", 1.0f, 3.0f, 1.0f, 3.0f, 1.4f, PF_Precision_HUNDREDTHS, 0, 0, kIdFalloff);
 
     out_data->num_params = kParamCount;
     return PF_Err_NONE;
@@ -226,7 +226,7 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     int composite = 1;
     int working_space = 1;
     int rolloff = 1;
-    float falloff = 2.0f;
+    float falloff = 1.4f;
     bool expand_bounds = true;
 
     if (!err) err = CheckoutFloat(in_data, kParamThreshold, &threshold);
@@ -270,7 +270,7 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     settings.composite = static_cast<CompositeMode>(std::clamp(composite - 1, 0, 2));
     settings.working_space = static_cast<WorkingSpace>(std::clamp(working_space - 1, 0, 2));
     settings.rolloff = static_cast<HighlightRolloff>(std::clamp(rolloff - 1, 0, 1));
-    settings.falloff = std::clamp(falloff, 1.5f, 3.0f);
+    settings.falloff = std::clamp(falloff, 1.0f, 3.0f);
     params.expand_bounds = expand_bounds;
 
     *out_params = params;

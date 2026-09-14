@@ -36,9 +36,11 @@ int MaximumBaseScale(float sigma, int layer_width, int layer_height);
 
 // `sigma` is the target glow sigma in render-resolution pixels; the layer size
 // is in the same pixels.
-// `falloff` is the exponent n of the 1/r^n the glow should follow. 2 is the
-// Stiles-Holladay inverse-square law of real veiling glare.
+// `falloff` is the exponent n of the 1/r^n the glow's skirt follows. 2 is the
+// Stiles-Holladay inverse-square law of real veiling glare; lower puts more
+// light at the wide scales, which is what gives Radius authority over the
+// glow's apparent size.
 GlowPlan MakeGlowPlan(float sigma, Quality quality, int layer_width, int layer_height, int min_base_scale = 1,
-                      float falloff = 2.0f);
+                      float falloff = 1.4f);
 
 }  // namespace abglow

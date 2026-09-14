@@ -38,7 +38,13 @@ constexpr int kTailOctaves = 1;
 // double reproduces 1/r^n when the octave weights go as sigma^(2-n): each
 // octave's peak density is w_k / sigma_k^2, and setting that proportional to
 // sigma_k^-n is what puts the curve on the law.
-float OctaveWeightExponent(float falloff) { return 2.0f - std::clamp(falloff, 1.0f, 4.0f); }
+// The octave weight exponent that makes the rendered skirt come out at
+// `falloff`. Pure sigma^(2-n) would give exactly n, but the cutoff at the
+// radius steepens the profile below it too; the correction is a straight-line
+// fit to the exponent measured from rendered point sources.
+float OctaveWeightExponent(float falloff) {
+    return 2.45f - 1.107f * std::clamp(falloff, 1.0f, 3.0f);
+}
 
 // Variance the box downsample and the reconstruction filter add, in units of
 // the per-level blur's variance times level sigma squared. Taking it back off
@@ -128,12 +134,19 @@ GlowPlan MakeGlowPlan(float sigma, Quality quality, int layer_width, int layer_h
     plan.level_sigma = sigma0 / CascadeFactor(band - 1);
     plan.level_count = std::min(band + kTailOctaves, kMaxPyramidLevels);
 
+    // Power law over the octaves, cut off at the radius. The law on its own is
+    // scale-free - 1/r^n has no characteristic size - so weighting the octaves
+    // by it alone left Radius changing the glow's brightness but barely its
+    // size. The exponential factor is what gives the radius meaning; below it
+    // the profile still follows the law.
     const float exponent = OctaveWeightExponent(falloff);
     float sum = 0.0f;
     const float widest = CascadedSigma(plan.level_sigma, band - 1);
     for (int i = 0; i < plan.level_count; ++i) {
-        plan.effective_sigma[i] = CascadedSigma(plan.level_sigma, i) * spread;
-        const float w = std::pow(CascadedSigma(plan.level_sigma, i) / widest, exponent);
+        const float scale = CascadedSigma(plan.level_sigma, i);
+        plan.effective_sigma[i] = scale * spread;
+        const float ratio = scale / widest;
+        const float w = std::pow(ratio, exponent) * std::exp(-ratio);
         plan.weights[i] = w;
         sum += w;
     }
