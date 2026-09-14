@@ -107,6 +107,28 @@ a rendered point source:
 | 2.5 | 2.508 | 0.9995 |
 | 3.0 | 2.985 | 0.9996 |
 
+**The ladder carries one octave past the radius.** Without it the widest octave
+*is* the radius, so the profile stops being a power law there and becomes that
+octave's Gaussian shoulder — the glow was gone by 1.5× the radius and exactly
+zero by 2×, which reads as a blur that stops rather than light trailing away.
+Measured against the value a quarter of the radius out, with and without it:
+
+| Distance | widest octave = radius | one octave past |
+|----------|------------------------|-----------------|
+| 1.0 × radius | 0.0065 | **0.0339** |
+| 1.5 × radius | 0.00006 | **0.0088** |
+| 2.0 × radius | 0 | **0.0014** |
+| 3.0 × radius | 0 | **0.00001** |
+
+The other half has to hold too: a large bright region must not lift the whole
+frame. Its glow in an empty corner measures 0.000% of its own core, because the
+far octaves are spread over so much area that their peak density is negligible
+even carrying equal energy. `TestGlowHasALongTailWithoutHaze` asserts both ends.
+A second tail octave was measured too — it reaches to 5× the radius and stays
+haze-free, but it puts the bounds at 4.1× the radius, which is a 92 MP buffer on
+a 4K comp and past the expansion cap anyway. One octave puts them at 2.05× and
+costs about 1.5× the render time, all of it in the larger composite.
+
 `TestFalloffFollowsThePowerLaw` holds it to ±0.15. An earlier hand-tuned weight
 tilt measured 1.61 — far shallower than real glare, which is why the glow read
 as haze rather than as light.

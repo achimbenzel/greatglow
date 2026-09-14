@@ -848,6 +848,77 @@ void TestFalloffFollowsThePowerLaw() {
     }
 }
 
+// The ladder carries an octave past the radius, so the profile stays a power
+// law there instead of turning into the widest octave's Gaussian shoulder and
+// vanishing. The other half of that has to hold too: a large bright region must
+// not lift the whole frame into haze.
+void TestGlowHasALongTailWithoutHaze() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const float radius = 200.0f;
+    {
+        const int size = 2400;
+        TestImage source(size, size, PixelDepth::kFloat32);
+        for (int y = size / 2 - 25; y < size / 2 + 25; ++y) {
+            for (int x = size / 2 - 25; x < size / 2 + 25; ++x) {
+                source.SetPixel(x, y, PixelF{1.0f, 20.0f, 20.0f, 20.0f});
+            }
+        }
+        GlowSettings settings = DefaultSettings();
+        settings.threshold = 0.5f;
+        settings.radius_x = settings.radius_y = radius;
+        settings.composite = CompositeMode::kGlowOnly;
+        settings.working_space = WorkingSpace::kLinear;
+        settings.dither = false;
+
+        TestImage dest(size, size, PixelDepth::kFloat32);
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk, "tail render succeeds");
+
+        const float near = dest.GetPixel(size / 2 + static_cast<int>(radius * 0.25f), size / 2).g;
+        const float far = dest.GetPixel(size / 2 + static_cast<int>(radius * 2.0f), size / 2).g;
+        Check(near > 0.0f, "tail test carries light");
+        Check(far > near * 1.0e-4f, "glow still carries light at twice the radius");
+    }
+
+    {
+        // A large bright region, and an empty corner far from it.
+        const int width = 2000;
+        const int height = 1400;
+        TestImage source(width, height, PixelDepth::kFloat32);
+        for (int y = 150; y < 750; ++y) {
+            for (int x = 150; x < 750; ++x) source.SetPixel(x, y, PixelF{1.0f, 6.0f, 6.0f, 6.0f});
+        }
+        GlowSettings settings = DefaultSettings();
+        settings.threshold = 0.5f;
+        settings.radius_x = settings.radius_y = radius;
+        settings.composite = CompositeMode::kGlowOnly;
+        settings.working_space = WorkingSpace::kLinear;
+        settings.dither = false;
+
+        TestImage dest(width, height, PixelDepth::kFloat32);
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk, "haze render succeeds");
+
+        const double core = dest.GetPixel(450, 450).g;
+        double corner = 0.0;
+        int count = 0;
+        for (int y = height - 300; y < height - 50; ++y) {
+            for (int x = width - 300; x < width - 50; ++x) {
+                corner += dest.GetPixel(x, y).g;
+                ++count;
+            }
+        }
+        corner /= count;
+        Check(core > 0.0 && corner < core * 0.002, "a large bright region leaves no flat haze");
+    }
+}
+
 void TestThresholdAndPassThrough() {
     MallocAllocator allocator;
     ThreadPoolRunner runner(2);
@@ -1113,6 +1184,7 @@ int main() {
     TestSmallAndLargeShapesGlowAlike();
     TestScreenStaysPositive();
     TestFalloffFollowsThePowerLaw();
+    TestGlowHasALongTailWithoutHaze();
     TestThresholdAndPassThrough();
     TestTransparentInput();
     TestHdrNotClamped();

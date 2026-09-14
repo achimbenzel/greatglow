@@ -27,6 +27,11 @@ int OctaveCount(Quality quality) {
 // count; this stays fixed so the step between octaves is always a factor of two.
 constexpr float kLevelSigma = 1.8f;
 
+// Octaves carried past the radius. Without them the widest octave is the radius
+// itself and the profile stops being a power law there, falling off as a
+// Gaussian - the glow is gone by 1.5x the radius instead of trailing away.
+constexpr int kTailOctaves = 1;
+
 // Veiling glare falls off as a power of the angle: the Stiles-Holladay law used
 // in the CIE disability-glare equations is 1/theta^2, which the CIE general
 // equation steepens towards 1/theta^3 close in. A sum of Gaussians whose sigmas
@@ -106,8 +111,8 @@ GlowPlan MakeGlowPlan(float sigma, Quality quality, int layer_width, int layer_h
     // The widest octave carries the requested sigma, and the ladder runs down
     // from it in halves, so the finest is a fixed fraction of the radius - which
     // is what keeps the glow the same shape at every render resolution.
-    int octaves = std::clamp(OctaveCount(quality), 1, kMaxPyramidLevels);
-    const float top = CascadeFactor(octaves - 1);
+    const int in_band = std::clamp(OctaveCount(quality), 1, kMaxPyramidLevels - kTailOctaves);
+    const float top = CascadeFactor(in_band - 1);
 
     const int wanted = static_cast<int>(std::lround(nominal / (kLevelSigma * top)));
     const int floor_scale = std::max(min_base_scale, 1);
@@ -118,13 +123,14 @@ GlowPlan MakeGlowPlan(float sigma, Quality quality, int layer_width, int layer_h
     // Rounding base_scale to an integer moves it a little; shortening the ladder
     // when the blur would be too small to be worth a pass keeps it in range.
     float sigma0 = std::max(0.35f, nominal / static_cast<float>(plan.base_scale));
-    while (octaves > 1 && sigma0 / CascadeFactor(octaves - 1) < 0.6f) --octaves;
-    plan.level_sigma = sigma0 / CascadeFactor(octaves - 1);
-    plan.level_count = octaves;
+    int band = in_band;
+    while (band > 1 && sigma0 / CascadeFactor(band - 1) < 0.6f) --band;
+    plan.level_sigma = sigma0 / CascadeFactor(band - 1);
+    plan.level_count = std::min(band + kTailOctaves, kMaxPyramidLevels);
 
     const float exponent = OctaveWeightExponent(falloff);
     float sum = 0.0f;
-    const float widest = CascadedSigma(plan.level_sigma, plan.level_count - 1);
+    const float widest = CascadedSigma(plan.level_sigma, band - 1);
     for (int i = 0; i < plan.level_count; ++i) {
         plan.effective_sigma[i] = CascadedSigma(plan.level_sigma, i) * spread;
         const float w = std::pow(CascadedSigma(plan.level_sigma, i) / widest, exponent);

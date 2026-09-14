@@ -104,7 +104,7 @@ Ship release builds from Visual Studio; mingw is for verification.
 |-----------|-----------------|--------------|
 | Threshold | 0 – 4 (0.5) | Brightness where the glow starts, in working-space units: 0.5 is mid grey, 1.0 is white, above 1.0 only HDR highlights glow. |
 | Threshold Softness | 0 – 100 % (40 %) | Width of the knee below the threshold. 0 is a hard cut; higher values ramp the glow in smoothly and avoid edges appearing in the glow. |
-| Radius | 0 – 4000 px (40) | Size of the glow. The value is roughly the distance, in full-resolution pixels, at which the glow has faded out. |
+| Radius | 0 – 4000 px (40) | Size of the glow's bloom, in full-resolution pixels. The octave ladder carries one octave past it, so light still trails measurably out to about twice this before it fades. |
 | Intensity | 0 – 10000 % (100 %) | Strength of the generated light. 0 turns the effect into a pass-through. |
 | Exposure | −10 – +10 stops (0) | Brightness of the glow in stops; +1 doubles it. Useful for large radii, where the same light is spread over more area. |
 | Saturation | 0 – 400 % (100 %) | Colour of the glow: 0 is white light, 100 % keeps the source colour, above that exaggerates it. |
