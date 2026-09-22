@@ -278,18 +278,39 @@ AxisTaps MakeTaps(float coordinate, int limit, UpsampleFilter filter) {
     return taps;
 }
 
+// One pyramid level the composite reconstructs the glow from: where its grid
+// sits in destination pixels, how coarse it is, and which destination pixels
+// it covers at all.
+struct GlowSource {
+    const ImageF* image = nullptr;
+    int scale = 1;
+    PixelPoint grid_start;
+    // Horizontal taps per destination column; identical for every row.
+    const AxisTaps* columns = nullptr;
+    int x_begin = 0;
+    int x_end = 0;
+    int y_begin = 0;
+    int y_end = 0;
+};
+
 struct CompositeContext {
     CompositeMode mode = CompositeMode::kAdd;
     float source_opacity = 1.0f;
     const TransferFunction* transfer = nullptr;
     bool dither = false;
+    // Highlight handling. Preserve Hue only runs where the output clips at 1
+    // (`bounded`: 8 and 16 bpc); Burn to White runs at every depth and only
+    // compresses the range where it is bounded.
     bool rolloff = false;
+    bool burn = false;
+    bool bounded = false;
     UpsampleFilter filter = UpsampleFilter::kQuadratic;
-    int scale = 1;
     int taps = 3;
-    PixelPoint grid_start;
-    // Horizontal taps per destination column; identical for every row.
-    const AxisTaps* columns = nullptr;
+    // The level-0 collapse. With a single tier it is the whole glow; with two it
+    // is the core, and covers only the layer and what the core tier spills.
+    GlowSource core;
+    // The halo tier's collapse, over the whole reach; no image with one tier.
+    GlowSource halo;
 };
 
 // The reconstruction filter is separable, and consecutive output rows share
@@ -299,8 +320,8 @@ struct CompositeContext {
 // only ever moves forward and four slots are enough.
 class GlowRowCache {
 public:
-    GlowRowCache(const ImageF& glow, const CompositeContext& ctx, int width)
-        : glow_(glow), ctx_(ctx), width_(width),
+    GlowRowCache(const GlowSource& source, int taps, int width)
+        : source_(source), taps_(taps), width_(width),
           storage_(static_cast<std::size_t>(width) * kSlots) {}
 
     const PixelF* Row(int glow_y) {
@@ -315,12 +336,11 @@ public:
 
 private:
     void Filter(int glow_y, PixelF* out) const {
-        const PixelF* src = glow_.Row(glow_y);
-        const int taps = ctx_.taps;
-        for (int x = 0; x < width_; ++x) {
-            const AxisTaps& cols = ctx_.columns[x];
+        const PixelF* src = source_.image->Row(glow_y);
+        for (int x = source_.x_begin; x < source_.x_end; ++x) {
+            const AxisTaps& cols = source_.columns[x];
             PixelF acc{0.0f, 0.0f, 0.0f, 0.0f};
-            for (int i = 0; i < taps; ++i) {
+            for (int i = 0; i < taps_; ++i) {
                 const PixelF& p = src[cols.index[i]];
                 const float w = cols.weight[i];
                 acc.a += p.a * w;
@@ -333,11 +353,62 @@ private:
     }
 
     static constexpr int kSlots = 4;
-    const ImageF& glow_;
-    const CompositeContext& ctx_;
+    const GlowSource& source_;
+    int taps_ = 3;
     int width_ = 0;
     std::vector<PixelF> storage_;
     int row_id_[kSlots] = {-1, -1, -1, -1};
+};
+
+// Reconstructs one GlowSource at destination resolution, a row at a time.
+class GlowSampler {
+public:
+    GlowSampler(const GlowSource& source, const CompositeContext& ctx, int dest_width)
+        : source_(source), filter_(ctx.filter), taps_(ctx.taps),
+          cache_(source, ctx.taps, source.image != nullptr && source.scale != 1 ? dest_width : 0) {}
+
+    void BeginRow(int y) {
+        active_ = source_.image != nullptr && y >= source_.y_begin && y < source_.y_end;
+        if (!active_) return;
+        if (source_.scale == 1) {
+            direct_ = source_.image->Row(y - source_.grid_start.y);
+            return;
+        }
+        const float inv_scale = 1.0f / static_cast<float>(source_.scale);
+        row_taps_ = MakeTaps((static_cast<float>(y - source_.grid_start.y) + 0.5f) * inv_scale - 0.5f,
+                             source_.image->height, filter_);
+        for (int j = 0; j < taps_; ++j) filtered_[j] = cache_.Row(row_taps_.index[j]);
+    }
+
+    void Accumulate(int x, PixelF& acc) const {
+        if (!active_ || x < source_.x_begin || x >= source_.x_end) return;
+        if (source_.scale == 1) {
+            const PixelF& p = direct_[x - source_.grid_start.x];
+            acc.a += p.a;
+            acc.r += p.r;
+            acc.g += p.g;
+            acc.b += p.b;
+            return;
+        }
+        for (int j = 0; j < taps_; ++j) {
+            const PixelF& p = filtered_[j][x];
+            const float w = row_taps_.weight[j];
+            acc.a += p.a * w;
+            acc.r += p.r * w;
+            acc.g += p.g * w;
+            acc.b += p.b * w;
+        }
+    }
+
+private:
+    const GlowSource& source_;
+    UpsampleFilter filter_;
+    int taps_ = 3;
+    GlowRowCache cache_;
+    bool active_ = false;
+    const PixelF* direct_ = nullptr;
+    const PixelF* filtered_[4] = {};
+    AxisTaps row_taps_;
 };
 
 inline float Quantize(float value, float max_value, float dither) {
@@ -424,20 +495,97 @@ inline void RolloffHighlights(float& r, float& g, float& b) {
     b *= scale;
 }
 
-inline PixelF EncodePremultiplied(const PixelF& linear, const TransferFunction& transfer, bool rolloff) {
-    // The rolloff is about the output's range, not about the transfer, so it
-    // applies to a linear working space too.
-    if (!rolloff && transfer.IsIdentity()) return linear;
-    const bool opaque = linear.a >= kOpaque;
-    if (!opaque && linear.a <= kTransparent) return PixelF{linear.a, 0.0f, 0.0f, 0.0f};
-    const float inv = opaque ? 1.0f : 1.0f / linear.a;
-    float r = linear.r * inv;
-    float g = linear.g * inv;
-    float b = linear.b * inv;
-    if (rolloff) RolloffHighlights(r, g, b);
-    const float back = opaque ? 1.0f : linear.a;
-    if (transfer.IsIdentity()) return PixelF{linear.a, r * back, g * back, b * back};
-    return PixelF{linear.a, transfer.Encode(r) * back, transfer.Encode(g) * back, transfer.Encode(b) * back};
+// A colour driven past what the output can show burns to white, the way an
+// over-exposed light does on film or on a sensor: the core of a neon tube is
+// white even though its glow is coloured. The shoulder Preserve Hue uses says
+// how far past the ceiling the brightest channel went - the light it has to
+// take off - and that much overexposure pulls the other channels up towards
+// the brightest. Nothing changes below the knee, and the join is C1, so no
+// contour is drawn where the burn begins. Unbounded (float) output keeps the
+// brightest channel's HDR value and only burns.
+inline void BurnHighlights(float& r, float& g, float& b, bool bounded) {
+    constexpr float kKnee = 0.75f;
+    const float m = std::max(r, std::max(g, b));
+    if (!(m > kKnee)) return;
+    const float rolled = SoftSaturate(m, kKnee);
+    const float white = 1.0f - std::exp(-(m - rolled));
+    const float level = bounded ? rolled : m;
+    const float scale = level / m;
+    r = r * scale + (level - r * scale) * white;
+    g = g * scale + (level - g * scale) * white;
+    b = b * scale + (level - b * scale) * white;
+}
+
+inline void ShapeHighlights(float& r, float& g, float& b, const CompositeContext& ctx) {
+    if (ctx.burn) {
+        BurnHighlights(r, g, b, ctx.bounded);
+    } else if (ctx.rolloff) {
+        RolloffHighlights(r, g, b);
+    }
+}
+
+// Linear working space: the premultiplied result is already what the host
+// blends, and what it shows over black is the light itself, so that is what
+// the highlight handling works on. Working on the unpremultiplied colour
+// instead read the faint tail of a glow over a transparent layer as the full
+// brightness of the source's colour at low coverage, and the shoulder dimmed
+// it by a tenth though it was nowhere near the ceiling. Where the output is
+// bounded, alpha is raised to cover the colour so the pixel stays a valid
+// premultiplied one.
+inline PixelF ShapePremultiplied(const PixelF& lit, const CompositeContext& ctx) {
+    if (!ctx.rolloff && !ctx.burn) return lit;
+    float r = lit.r;
+    float g = lit.g;
+    float b = lit.b;
+    ShapeHighlights(r, g, b, ctx);
+    PixelF out{lit.a, r, g, b};
+    if (ctx.bounded) out.a = std::min(1.0f, std::max(out.a, std::max(r, std::max(g, b))));
+    return out;
+}
+
+// In an encoded working space After Effects blends premultiplied pixels as
+// they stand, so what a pixel shows over black is its premultiplied value. The
+// glow is light, and light over black encodes as Encode(light) - not as
+// Encode(light / coverage) * coverage, which the concave curve makes darker
+// the less coverage there is. Built that way, a glow spilling into a
+// transparent layer kept a third of its light at the edge and a tenth of it
+// out in the tail. So the result is built as light over black, and its alpha
+// is the largest encoded channel: the least coverage that can carry that
+// colour, which over anything brighter than black composites like Screen.
+// An opaque pixel comes out as Encode(source + glow), exactly as it always has.
+inline PixelF ComposeEncoded(const PixelF& raw_source, const PixelF& glow, const CompositeContext& ctx) {
+    const TransferFunction& transfer = *ctx.transfer;
+    PixelF source{0.0f, 0.0f, 0.0f, 0.0f};
+    if (ctx.mode != CompositeMode::kGlowOnly && raw_source.a > kTransparent) {
+        const float opacity = ctx.source_opacity;
+        source = PixelF{raw_source.a * opacity, raw_source.r * opacity, raw_source.g * opacity,
+                        raw_source.b * opacity};
+    }
+    float r = transfer.Decode(source.r);
+    float g = transfer.Decode(source.g);
+    float b = transfer.Decode(source.b);
+    switch (ctx.mode) {
+        case CompositeMode::kGlowOnly:
+            r = glow.r;
+            g = glow.g;
+            b = glow.b;
+            break;
+        case CompositeMode::kScreen:
+            r = ScreenChannel(r, glow.r);
+            g = ScreenChannel(g, glow.g);
+            b = ScreenChannel(b, glow.b);
+            break;
+        case CompositeMode::kAdd:
+        default:
+            r += glow.r;
+            g += glow.g;
+            b += glow.b;
+            break;
+    }
+    ShapeHighlights(r, g, b, ctx);
+    PixelF out{0.0f, transfer.Encode(r), transfer.Encode(g), transfer.Encode(b)};
+    out.a = std::clamp(std::max(source.a, std::max(out.r, std::max(out.g, out.b))), 0.0f, 1.0f);
+    return out;
 }
 
 template <PixelDepth kDepth>
@@ -463,26 +611,21 @@ inline bool IsZero(const PixelF& p) {
 }
 
 template <PixelDepth kSrcDepth, PixelDepth kDstDepth>
-void CompositeRows(const HostImage& source, int offset_x, int offset_y, const ImageF& glow,
-                   const CompositeContext& ctx, const HostImage& dest, int y_begin, int y_end) {
+void CompositeRows(const HostImage& source, int offset_x, int offset_y, const CompositeContext& ctx,
+                   const HostImage& dest, int y_begin, int y_end) {
     const TransferFunction& transfer = *ctx.transfer;
     const bool has_source = !source.Empty() && ctx.mode != CompositeMode::kGlowOnly;
-    const float inv_scale = 1.0f / static_cast<float>(ctx.scale);
 
-    GlowRowCache cache(glow, ctx, ctx.scale == 1 ? 0 : dest.width);
+    GlowSampler core(ctx.core, ctx, dest.width);
+    GlowSampler halo(ctx.halo, ctx, dest.width);
 
     for (int y = y_begin; y < y_end; ++y) {
         const int src_y = y + offset_y;
         const bool src_row_valid = has_source && src_y >= 0 && src_y < source.height;
         const void* src_row = src_row_valid ? source.ConstRow(src_y) : nullptr;
         void* dst_row = dest.Row(y);
-        const PixelF* filtered[4] = {};
-        AxisTaps row_taps;
-        if (ctx.scale != 1) {
-            row_taps = MakeTaps((static_cast<float>(y - ctx.grid_start.y) + 0.5f) * inv_scale - 0.5f, glow.height,
-                                ctx.filter);
-            for (int j = 0; j < ctx.taps; ++j) filtered[j] = cache.Row(row_taps.index[j]);
-        }
+        core.BeginRow(y);
+        halo.BeginRow(y);
         const int src_x_begin = src_row_valid ? std::max(0, -offset_x) : dest.width;
         const int src_x_end = src_row_valid ? std::min(dest.width, source.width - offset_x) : dest.width;
 
@@ -491,18 +634,8 @@ void CompositeRows(const HostImage& source, int offset_x, int offset_y, const Im
             const bool src_valid = x >= src_x_begin && x < src_x_end;
 
             PixelF glow_pixel{0.0f, 0.0f, 0.0f, 0.0f};
-            if (ctx.scale == 1) {
-                glow_pixel = glow.At(x - ctx.grid_start.x, y - ctx.grid_start.y);
-            } else {
-                for (int j = 0; j < ctx.taps; ++j) {
-                    const PixelF& p = filtered[j][x];
-                    const float w = row_taps.weight[j];
-                    glow_pixel.a += p.a * w;
-                    glow_pixel.r += p.r * w;
-                    glow_pixel.g += p.g * w;
-                    glow_pixel.b += p.b * w;
-                }
-            }
+            core.Accumulate(x, glow_pixel);
+            halo.Accumulate(x, glow_pixel);
 
             if constexpr (kSrcDepth == kDstDepth) {
                 // Nothing to add here: keep the original pixel bit-exact.
@@ -514,9 +647,12 @@ void CompositeRows(const HostImage& source, int offset_x, int offset_y, const Im
             }
 
             const PixelF raw = src_valid ? ReadRowPixel<kSrcDepth>(src_row, src_x) : PixelF{0.0f, 0.0f, 0.0f, 0.0f};
-            const PixelF source_linear = LinearizePremultiplied(raw, transfer);
-            const PixelF lit = CombinePixel(source_linear, glow_pixel, ctx);
-            const PixelF encoded = EncodePremultiplied(lit, transfer, ctx.rolloff);
+            PixelF encoded;
+            if (transfer.IsIdentity()) {
+                encoded = ShapePremultiplied(CombinePixel(raw, glow_pixel, ctx), ctx);
+            } else {
+                encoded = ComposeEncoded(raw, glow_pixel, ctx);
+            }
 
             if constexpr (kDstDepth == PixelDepth::kFloat32) {
                 static_cast<PixelF*>(dst_row)[x] = encoded;
@@ -536,35 +672,33 @@ void CompositeRows(const HostImage& source, int offset_x, int offset_y, const Im
 }
 
 template <PixelDepth kDstDepth>
-void CompositeDispatchSource(const HostImage& source, int offset_x, int offset_y, const ImageF& glow,
-                             const CompositeContext& ctx, const HostImage& dest, int begin, int end) {
+void CompositeDispatchSource(const HostImage& source, int offset_x, int offset_y, const CompositeContext& ctx,
+                             const HostImage& dest, int begin, int end) {
     switch (source.depth) {
         case PixelDepth::kBits8:
-            CompositeRows<PixelDepth::kBits8, kDstDepth>(source, offset_x, offset_y, glow, ctx, dest, begin, end);
+            CompositeRows<PixelDepth::kBits8, kDstDepth>(source, offset_x, offset_y, ctx, dest, begin, end);
             break;
         case PixelDepth::kBits16:
-            CompositeRows<PixelDepth::kBits16, kDstDepth>(source, offset_x, offset_y, glow, ctx, dest, begin, end);
+            CompositeRows<PixelDepth::kBits16, kDstDepth>(source, offset_x, offset_y, ctx, dest, begin, end);
             break;
         case PixelDepth::kFloat32:
-            CompositeRows<PixelDepth::kFloat32, kDstDepth>(source, offset_x, offset_y, glow, ctx, dest, begin, end);
+            CompositeRows<PixelDepth::kFloat32, kDstDepth>(source, offset_x, offset_y, ctx, dest, begin, end);
             break;
     }
 }
 
-void Composite(const HostImage& source, int offset_x, int offset_y, const ImageF& glow,
-               const CompositeContext& ctx, const HostImage& dest, TaskRunner& runner) {
+void Composite(const HostImage& source, int offset_x, int offset_y, const CompositeContext& ctx,
+               const HostImage& dest, TaskRunner& runner) {
     ParallelRows(runner, dest.height, [&](int begin, int end, int) {
         switch (dest.depth) {
             case PixelDepth::kBits8:
-                CompositeDispatchSource<PixelDepth::kBits8>(source, offset_x, offset_y, glow, ctx, dest, begin, end);
+                CompositeDispatchSource<PixelDepth::kBits8>(source, offset_x, offset_y, ctx, dest, begin, end);
                 break;
             case PixelDepth::kBits16:
-                CompositeDispatchSource<PixelDepth::kBits16>(source, offset_x, offset_y, glow, ctx, dest, begin,
-                                                             end);
+                CompositeDispatchSource<PixelDepth::kBits16>(source, offset_x, offset_y, ctx, dest, begin, end);
                 break;
             case PixelDepth::kFloat32:
-                CompositeDispatchSource<PixelDepth::kFloat32>(source, offset_x, offset_y, glow, ctx, dest, begin,
-                                                              end);
+                CompositeDispatchSource<PixelDepth::kFloat32>(source, offset_x, offset_y, ctx, dest, begin, end);
                 break;
         }
     });
@@ -618,16 +752,35 @@ float RadiusToSigma(float radius) {
     return std::max(0.0f, radius) * 0.32f;
 }
 
-GlowPlan PlanForRender(const GlowSettings& settings, const GlowRender& render) {
-    // The pyramid has to span everywhere the glow has light, not the rectangle
-    // the host happens to be asking for, so the memory budget is measured
-    // against that span rather than against the destination.
+GlowPlan PlanForLayer(const GlowSettings& settings, int layer_width, int layer_height) {
     const float sigma = std::max(RadiusToSigma(settings.radius_x), RadiusToSigma(settings.radius_y));
-    const int budget_reach = static_cast<int>(std::ceil(4.5f * sigma));
-    const int min_scale = MinimumBaseScale(render.source.width + 2 * budget_reach,
-                                           render.source.height + 2 * budget_reach, settings.quality);
-    return MakeGlowPlan(sigma, settings.quality, render.source.width, render.source.height, min_scale,
-                        settings.falloff, settings.aberration_r, settings.aberration_g, settings.aberration_b);
+    if (settings.model == GlowModel::kClassic) {
+        // The pyramid has to span everywhere the glow has light, not the
+        // rectangle the host happens to be asking for, so the memory budget is
+        // measured against that span rather than against the destination.
+        const int budget_reach = static_cast<int>(std::ceil(4.5f * sigma));
+        const int min_scale = MinimumBaseScale(layer_width + 2 * budget_reach, layer_height + 2 * budget_reach,
+                                               settings.quality);
+        return MakeGlowPlan(sigma, settings.quality, layer_width, layer_height, min_scale, settings.falloff,
+                            settings.aberration_r, settings.aberration_g, settings.aberration_b);
+    }
+    // The core is a fixed size in the composition, so it follows the render
+    // resolution the way the radius does.
+    return MakeInverseSquarePlan(sigma, kInverseSquareCoreSigma * std::max(settings.resolution, 0.0f),
+                                 settings.quality, layer_width, layer_height, 1, settings.falloff,
+                                 settings.aberration_r, settings.aberration_g, settings.aberration_b);
+}
+
+float GlowReach(const GlowSettings& settings, int layer_width, int layer_height) {
+    if (settings.model == GlowModel::kClassic) {
+        const float sigma = RadiusToSigma(std::max(settings.radius_x, settings.radius_y));
+        return MakeGlowPlan(sigma, settings.quality, layer_width, layer_height).Reach();
+    }
+    return PlanForLayer(settings, layer_width, layer_height).Reach();
+}
+
+GlowPlan PlanForRender(const GlowSettings& settings, const GlowRender& render) {
+    return PlanForLayer(settings, render.source.width, render.source.height);
 }
 
 GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Allocator& allocator,
@@ -655,6 +808,12 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
 
     const GlowPlan plan = PlanForRender(settings, render);
     const int scale = plan.base_scale;
+    const int count = plan.level_count;
+    const int split = std::clamp(plan.split_level, 0, count - 1);
+    // One pixel of the halo tier's first level, in render pixels. Both tiers
+    // are anchored to multiples of it, so the downsample from one into the
+    // other lands on whole pixels.
+    const int halo_step = scale << split;
 
     // In source coordinates, so the grid is anchored to the layer's pixels: it
     // must not move when the radius animates the bounds, nor when the host asks
@@ -664,21 +823,40 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
     const int low_y = std::min(-reach, render.source_offset_y);
     const int high_x = std::max(render.source.width + reach, render.source_offset_x + render.dest.width);
     const int high_y = std::max(render.source.height + reach, render.source_offset_y + render.dest.height);
-    const PixelPoint origin{FloorToMultiple(low_x, scale), FloorToMultiple(low_y, scale)};
-    const int level0_width = CeilDiv(high_x - origin.x, scale);
-    const int level0_height = CeilDiv(high_y - origin.y, scale);
+    const PixelPoint halo_origin{FloorToMultiple(low_x, halo_step), FloorToMultiple(low_y, halo_step)};
+    const int halo_width = CeilDiv(high_x - halo_origin.x, halo_step);
+    const int halo_height = CeilDiv(high_y - halo_origin.y, halo_step);
+
+    // With one tier level 0 spans the whole reach. With two it covers the layer
+    // and what the core tier's blurs spill past it, rounded out to whole halo
+    // pixels so the last core level pairs up exactly.
+    PixelPoint core_origin = halo_origin;
+    int level0_width = halo_width;
+    int level0_height = halo_height;
+    if (split > 0) {
+        const int margin = static_cast<int>(std::ceil(4.0f * plan.effective_sigma[split - 1] *
+                                                      static_cast<float>(scale))) + 2 * scale;
+        core_origin = PixelPoint{FloorToMultiple(-margin, halo_step), FloorToMultiple(-margin, halo_step)};
+        level0_width = CeilDiv(render.source.width + margin - core_origin.x, halo_step) << split;
+        level0_height = CeilDiv(render.source.height + margin - core_origin.y, halo_step) << split;
+    }
 
     // The rest of the pipeline works in destination pixels.
-    const PixelPoint grid_start{origin.x - render.source_offset_x, origin.y - render.source_offset_y};
+    const PixelPoint grid_start{core_origin.x - render.source_offset_x, core_origin.y - render.source_offset_y};
+    const PixelPoint halo_start{halo_origin.x - render.source_offset_x, halo_origin.y - render.source_offset_y};
 
     OwnedImageF levels[kMaxPyramidLevels];
-    for (int i = 0; i < plan.level_count; ++i) {
-        const int w = LevelSize(level0_width, i);
-        const int h = LevelSize(level0_height, i);
+    int temp_width = 1;
+    int temp_height = 1;
+    for (int i = 0; i < count; ++i) {
+        const int w = i < split ? LevelSize(level0_width, i) : LevelSize(halo_width, i - split);
+        const int h = i < split ? LevelSize(level0_height, i) : LevelSize(halo_height, i - split);
         if (!levels[i].Allocate(allocator, w, h)) return GlowResult::kOutOfMemory;
+        temp_width = std::max(temp_width, w);
+        temp_height = std::max(temp_height, h);
     }
     OwnedImageF temp;
-    if (!temp.Allocate(allocator, level0_width, level0_height)) return GlowResult::kOutOfMemory;
+    if (!temp.Allocate(allocator, temp_width, temp_height)) return GlowResult::kOutOfMemory;
 
     Threshold threshold;
     threshold.level = transfer.Decode(std::max(0.0f, settings.threshold));
@@ -704,19 +882,27 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
     const float sigma_ratio_y = sigma > 0.0f ? sigma_y / sigma : 1.0f;
     const BlurKernel kernel_x = BlurKernel::Gaussian(plan.level_sigma * sigma_ratio_x);
     const BlurKernel kernel_y = BlurKernel::Gaussian(plan.level_sigma * sigma_ratio_y);
-    for (int i = 0; i < plan.level_count; ++i) {
+    for (int i = 0; i < count; ++i) {
         BlurSeparable(levels[i].View(), temp.View(), kernel_x, kernel_y, runner);
-        if (i + 1 < plan.level_count) {
+        if (i + 1 >= count) continue;
+        if (i + 1 == split) {
+            DownsampleHalfInto(levels[i].View(), levels[i + 1].View(), (core_origin.x - halo_origin.x) / halo_step,
+                               (core_origin.y - halo_origin.y) / halo_step, runner);
+        } else {
             DownsampleHalf(levels[i].View(), levels[i + 1].View(), runner);
         }
     }
 
-    // Collapse the octaves back down, weighting each one.
-    const int top = plan.level_count - 1;
-    ScaleInPlace(levels[top].View(), plan.channel_weights[top], runner);
-    for (int i = top - 1; i >= 0; --i) {
-        UpsampleHalfAccumulate(levels[i + 1].View(), levels[i].View(), plan.channel_weights[i], runner);
-    }
+    // Collapse the octaves back down, weighting each one: the halo tier into
+    // its first level, the core tier into level 0.
+    auto collapse = [&](int first, int last) {
+        ScaleInPlace(levels[last].View(), plan.channel_weights[last], runner);
+        for (int i = last - 1; i >= first; --i) {
+            UpsampleHalfAccumulate(levels[i + 1].View(), levels[i].View(), plan.channel_weights[i], runner);
+        }
+    };
+    collapse(split, count - 1);
+    if (split > 0) collapse(0, split - 1);
 
     // Exposure, intensity, saturation and tint are linear, so they can run on
     // the pyramid before the final upsample.
@@ -727,37 +913,54 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
     color.tint_r = 1.0f + (settings.tint_r - 1.0f) * tint;
     color.tint_g = 1.0f + (settings.tint_g - 1.0f) * tint;
     color.tint_b = 1.0f + (settings.tint_b - 1.0f) * tint;
-    ParallelRows(runner, level0.height, [&](int begin, int end, int) {
-        for (int y = begin; y < end; ++y) {
-            PixelF* row = level0.Row(y);
-            for (int x = 0; x < level0.width; ++x) color.Apply(row[x]);
-        }
-    });
+    auto apply_color = [&](ImageF& image) {
+        ParallelRows(runner, image.height, [&](int begin, int end, int) {
+            for (int y = begin; y < end; ++y) {
+                PixelF* row = image.Row(y);
+                for (int x = 0; x < image.width; ++x) color.Apply(row[x]);
+            }
+        });
+    };
+    apply_color(level0);
+    if (split > 0) apply_color(levels[split].View());
 
     CompositeContext ctx;
     ctx.mode = settings.composite;
     ctx.transfer = &transfer;
     ctx.dither = settings.dither && render.dest.depth != PixelDepth::kFloat32;
     ctx.source_opacity = std::clamp(settings.source_opacity, 0.0f, 1.0f);
-    ctx.rolloff = settings.rolloff == HighlightRolloff::kPreserveHue &&
-                  render.dest.depth != PixelDepth::kFloat32;
+    ctx.bounded = render.dest.depth != PixelDepth::kFloat32;
+    ctx.rolloff = settings.rolloff == HighlightRolloff::kPreserveHue && ctx.bounded;
+    ctx.burn = settings.rolloff == HighlightRolloff::kBurnToWhite;
     ctx.filter = settings.quality >= Quality::kHigh ? UpsampleFilter::kCubic : UpsampleFilter::kQuadratic;
-    ctx.scale = scale;
-    ctx.grid_start = grid_start;
-
-    std::vector<AxisTaps> columns;
     ctx.taps = ctx.filter == UpsampleFilter::kCubic ? 4 : 3;
-    if (scale != 1) {
-        const float inv_scale = 1.0f / static_cast<float>(scale);
-        columns.resize(static_cast<std::size_t>(render.dest.width));
-        for (int x = 0; x < render.dest.width; ++x) {
-            columns[static_cast<std::size_t>(x)] = MakeTaps(
-                (static_cast<float>(x - grid_start.x) + 0.5f) * inv_scale - 0.5f, level0.width, ctx.filter);
-        }
-        ctx.columns = columns.data();
-    }
 
-    Composite(render.source, render.source_offset_x, render.source_offset_y, level0, ctx, render.dest, runner);
+    const int dest_width = render.dest.width;
+    const int dest_height = render.dest.height;
+    auto describe = [&](GlowSource& out, const ImageF& image, int step, const PixelPoint& start, bool whole,
+                        std::vector<AxisTaps>& columns) {
+        out.image = &image;
+        out.scale = step;
+        out.grid_start = start;
+        out.x_begin = whole ? 0 : std::clamp(start.x, 0, dest_width);
+        out.x_end = whole ? dest_width : std::clamp(start.x + image.width * step, 0, dest_width);
+        out.y_begin = whole ? 0 : std::clamp(start.y, 0, dest_height);
+        out.y_end = whole ? dest_height : std::clamp(start.y + image.height * step, 0, dest_height);
+        if (step == 1) return;
+        const float inv_step = 1.0f / static_cast<float>(step);
+        columns.resize(static_cast<std::size_t>(dest_width));
+        for (int x = 0; x < dest_width; ++x) {
+            columns[static_cast<std::size_t>(x)] = MakeTaps(
+                (static_cast<float>(x - start.x) + 0.5f) * inv_step - 0.5f, image.width, ctx.filter);
+        }
+        out.columns = columns.data();
+    };
+    std::vector<AxisTaps> core_columns;
+    std::vector<AxisTaps> halo_columns;
+    describe(ctx.core, level0, scale, grid_start, split == 0, core_columns);
+    if (split > 0) describe(ctx.halo, levels[split].View(), halo_step, halo_start, true, halo_columns);
+
+    Composite(render.source, render.source_offset_x, render.source_offset_y, ctx, render.dest, runner);
     return GlowResult::kOk;
 }
 

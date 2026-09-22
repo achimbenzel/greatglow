@@ -54,10 +54,7 @@ A_long BoundsExpansion(const GlowSettings& settings, bool expand_bounds, A_long 
                        A_long layer_height) {
     if (!expand_bounds) return 0;
     if (settings.intensity <= 0.0f) return 0;
-    const float sigma = RadiusToSigma(std::max(settings.radius_x, settings.radius_y));
-    const GlowPlan plan = MakeGlowPlan(sigma, settings.quality, static_cast<int>(layer_width),
-                                       static_cast<int>(layer_height));
-    const float reach = plan.Reach();
+    const float reach = GlowReach(settings, static_cast<int>(layer_width), static_cast<int>(layer_height));
     if (!(reach > 0.0f)) return 0;
     return std::min<A_long>(kMaxBoundsExpansion, static_cast<A_long>(std::ceil(reach)));
 }
@@ -99,10 +96,11 @@ PF_Err RunPipeline(PF_InData* in_data, const GlowSettings& settings, PF_EffectWo
 
         if (diag::Enabled()) {
             const GlowPlan plan = PlanForRender(settings, render);
-            diag::Log("        source=%dx%d dest=%dx%d  plan: scale=%d levels=%d level_sigma=%.3f "
+            diag::Log("        source=%dx%d dest=%dx%d  plan: scale=%d levels=%d split=%d level_sigma=%.3f "
                       "eff_sigma=%.1f reach=%.1f",
                       render.source.width, render.source.height, render.dest.width, render.dest.height,
-                      plan.base_scale, plan.level_count, plan.level_sigma, plan.EffectiveSigma(), plan.Reach());
+                      plan.base_scale, plan.level_count, plan.split_level, plan.level_sigma, plan.EffectiveSigma(),
+                      plan.Reach());
         }
 
         switch (RenderGlow(settings, render, allocator, runner)) {
@@ -170,6 +168,7 @@ PF_Err SmartPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtr
               params.settings.falloff, params.settings.aberration_r, params.settings.aberration_g,
               params.settings.aberration_b, params.settings.saturation_bias, params.settings.source_opacity,
               params.settings.unmult ? 1 : 0, (int)params.settings.rolloff);
+    diag::Log("  model=%d resolution=%.3f", (int)params.settings.model, params.settings.resolution);
     diag::Log("  request rect  = [%d %d %d %d]", (int)request.rect.left, (int)request.rect.top,
               (int)request.rect.right, (int)request.rect.bottom);
     diag::Log("  layer  rect   = [%d %d %d %d]", (int)layer_rect.left, (int)layer_rect.top, (int)layer_rect.right,

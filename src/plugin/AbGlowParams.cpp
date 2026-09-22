@@ -45,13 +45,14 @@ enum ParamId {
     kIdMultiplyRed = 27,
     kIdMultiplyGreen = 28,
     kIdMultiplyBlue = 29,
-    kIdAdvancedGroupEnd = 30
+    kIdAdvancedGroupEnd = 30,
+    kIdGlowModel = 31
 };
 
 // The layout as shipped. These numbers are in every saved project that uses the
 // effect, so a change here is a change to a file format other people's work
 // depends on. Appending is fine; anything else is not.
-static_assert(kParamCount == 31, "parameters may only be appended");
+static_assert(kParamCount == 32, "parameters may only be appended");
 static_assert(kParamExpandBounds == 17 && kParamRolloff == 18, "shipped parameter order");
 static_assert(kParamRenderGroupEnd == 19, "shipped parameter order");
 static_assert(kParamAboutGroupStart == 20 && kParamAboutGroupEnd == 21, "shipped parameter order");
@@ -63,10 +64,13 @@ static_assert(kParamAdvancedGroupStart == 23 && kIdAdvancedGroup == 23, "shipped
 static_assert(kParamUnmult == 26 && kIdUnmult == 26, "shipped parameter order and id");
 static_assert(kParamMultiplyBlue == 29 && kIdMultiplyBlue == 29, "shipped parameter order and id");
 static_assert(kParamAdvancedGroupEnd == 30 && kIdAdvancedGroupEnd == 30, "shipped parameter order and id");
+static_assert(kParamGlowModel == 31 && kIdGlowModel == 31, "shipped parameter order and id");
 
 constexpr char kQualityChoices[] = "Draft|Normal|High|Best";
 constexpr char kCompositeChoices[] = "Add|Screen|Glow Only";
 constexpr char kWorkingSpaceChoices[] = "Auto|Linear|sRGB";
+// Ordered to match GlowModel.
+constexpr char kGlowModelChoices[] = "Inverse Square|Classic";
 
 float RationalToFloat(const PF_RationalScale& value) {
     if (value.den == 0) return 1.0f;
@@ -138,8 +142,9 @@ PF_Err CheckoutColor(PF_InData* in_data, int index, float* out_rgb) {
 
 }  // namespace
 
-// Ordered to match HighlightRolloff.
-constexpr char kRolloffChoices[] = "Preserve Hue|Clip";
+// Ordered to match HighlightRolloff. A popup's saved value is its position, so
+// new choices go on the end.
+constexpr char kRolloffChoices[] = "Preserve Hue|Clip|Burn to White";
 
 PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data) {
     PF_ParamDef def;
@@ -155,7 +160,9 @@ PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data) {
                          PF_ValueDisplayFlag_PERCENT, 0, kIdSoftness);
 
     AEFX_CLR_STRUCT(def);
-    PF_ADD_FLOAT_SLIDERX("Radius", 0.0f, 4000.0f, 0.0f, 400.0f, 40.0f, PF_Precision_TENTHS, 0, 0, kIdRadius);
+    // Under Inverse Square the radius is how far the light reaches, not how
+    // big a blur is, so the useful range runs well past the old default.
+    PF_ADD_FLOAT_SLIDERX("Radius", 0.0f, 4000.0f, 0.0f, 1000.0f, 150.0f, PF_Precision_TENTHS, 0, 0, kIdRadius);
 
     AEFX_CLR_STRUCT(def);
     PF_ADD_FLOAT_SLIDERX("Intensity", 0.0f, 10000.0f, 0.0f, 400.0f, 100.0f, PF_Precision_TENTHS,
@@ -200,7 +207,7 @@ PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data) {
     PF_ADD_CHECKBOXX("Expand Bounds", TRUE, 0, kIdExpandBounds);
 
     AEFX_CLR_STRUCT(def);
-    PF_ADD_POPUPX("Highlight Rolloff", 2, 1, kRolloffChoices, 0, kIdRolloff);
+    PF_ADD_POPUPX("Highlight Rolloff", 3, 1, kRolloffChoices, 0, kIdRolloff);
 
     AEFX_CLR_STRUCT(def);
     PF_END_TOPIC(kIdRenderGroupEnd);
@@ -217,7 +224,8 @@ PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data) {
     // new lands here too, below the About header, rather than next to the
     // controls it belongs with: moving it would move every saved value.
     AEFX_CLR_STRUCT(def);
-    PF_ADD_FLOAT_SLIDERX("Falloff", 1.0f, 3.0f, 1.0f, 3.0f, 1.4f, PF_Precision_HUNDREDTHS, 0, 0, kIdFalloff);
+    // 2.0 is inverse square, which is what the default Glow Model is built on.
+    PF_ADD_FLOAT_SLIDERX("Falloff", 1.0f, 3.0f, 1.0f, 3.0f, 2.0f, PF_Precision_HUNDREDTHS, 0, 0, kIdFalloff);
 
     AEFX_CLR_STRUCT(def);
     PF_ADD_TOPICX("Advanced", PF_ParamFlag_START_COLLAPSED, kIdAdvancedGroup);
@@ -248,6 +256,9 @@ PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data) {
     AEFX_CLR_STRUCT(def);
     PF_END_TOPIC(kIdAdvancedGroupEnd);
 
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_POPUPX("Glow Model", 2, 1, kGlowModelChoices, 0, kIdGlowModel);
+
     out_data->num_params = kParamCount;
     return PF_Err_NONE;
 }
@@ -259,7 +270,7 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
 
     float threshold = 0.5f;
     float softness = 40.0f;
-    float radius = 40.0f;
+    float radius = 150.0f;
     float intensity = 100.0f;
     float exposure = 0.0f;
     float saturation = 100.0f;
@@ -269,7 +280,8 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     int composite = 1;
     int working_space = 1;
     int rolloff = 1;
-    float falloff = 1.4f;
+    int glow_model = 1;
+    float falloff = 2.0f;
     float saturation_bias = 0.0f;
     float source_opacity = 100.0f;
     float multiply_r = 100.0f;
@@ -298,6 +310,7 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     if (!err) err = CheckoutFloat(in_data, kParamMultiplyRed, &multiply_r);
     if (!err) err = CheckoutFloat(in_data, kParamMultiplyGreen, &multiply_g);
     if (!err) err = CheckoutFloat(in_data, kParamMultiplyBlue, &multiply_b);
+    if (!err) err = CheckoutPopup(in_data, kParamGlowModel, &glow_model);
     if (err) return err;
 
     // Slider distances are authored at full resolution; convert to the pixels
@@ -310,8 +323,12 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     GlowSettings& settings = params.settings;
     settings.threshold = std::max(0.0f, threshold);
     settings.threshold_softness = std::clamp(softness * 0.01f, 0.0f, 1.0f);
-    settings.radius_x = std::max(0.0f, radius) * downsample_x / (aspect > 0.0f ? aspect : 1.0f);
+    const float scale_x = downsample_x / (aspect > 0.0f ? aspect : 1.0f);
+    settings.radius_x = std::max(0.0f, radius) * scale_x;
     settings.radius_y = std::max(0.0f, radius) * downsample_y;
+    // The glow's sigma is taken from the wider axis, so its fixed-size core
+    // has to be scaled by the same factor.
+    settings.resolution = std::max(scale_x, downsample_y);
     settings.intensity = std::max(0.0f, intensity) * 0.01f;
     settings.exposure = exposure;
     settings.saturation = std::max(0.0f, saturation) * 0.01f;
@@ -324,7 +341,8 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     settings.quality = static_cast<Quality>(quality_level);
     settings.composite = static_cast<CompositeMode>(std::clamp(composite - 1, 0, 2));
     settings.working_space = static_cast<WorkingSpace>(std::clamp(working_space - 1, 0, 2));
-    settings.rolloff = static_cast<HighlightRolloff>(std::clamp(rolloff - 1, 0, 1));
+    settings.rolloff = static_cast<HighlightRolloff>(std::clamp(rolloff - 1, 0, 2));
+    settings.model = static_cast<GlowModel>(std::clamp(glow_model - 1, 0, 1));
     settings.falloff = std::clamp(falloff, 1.0f, 3.0f);
     settings.aberration_r = std::clamp(multiply_r * 0.01f, 0.1f, 4.0f);
     settings.aberration_g = std::clamp(multiply_g * 0.01f, 0.1f, 4.0f);

@@ -32,6 +32,7 @@ void CheckNear(float actual, float expected, float tolerance, const std::string&
 }
 
 using abglow::CompositeMode;
+using abglow::GlowModel;
 using abglow::GlowRender;
 using abglow::GlowResult;
 using abglow::GlowSettings;
@@ -53,6 +54,10 @@ GlowSettings DefaultSettings() {
     s.working_space = WorkingSpace::kLinear;
     s.dither = false;
     return s;
+}
+
+const char* ModelName(GlowModel model) {
+    return model == GlowModel::kClassic ? " (classic)" : " (inverse square)";
 }
 
 float TotalEnergy(const TestImage& image) {
@@ -258,7 +263,7 @@ float GlowCentroid(const TestImage& image, int row) {
 // layer's far edge were dropped, which shifted the layer's centre of mass
 // whenever the radius changed the pyramid step. The layer size here is
 // deliberately not a multiple of any likely step.
-void TestGlowDoesNotSlideWithRadius() {
+void TestGlowDoesNotSlideWithRadius(GlowModel model) {
     MallocAllocator allocator;
     ThreadPoolRunner runner(4);
 
@@ -268,8 +273,13 @@ void TestGlowDoesNotSlideWithRadius() {
     float worst = 0.0f;
 
     for (float radius = 200.0f; radius <= 240.0f; radius += 4.0f) {
-        const float sigma = abglow::RadiusToSigma(radius);
-        const int expansion = static_cast<int>(std::ceil(abglow::MakeGlowPlan(sigma, Quality::kNormal, layer_w, layer_h).Reach()));
+        GlowSettings settings = DefaultSettings();
+        settings.model = model;
+        settings.threshold = 0.0f;
+        settings.radius_x = settings.radius_y = radius;
+        settings.composite = CompositeMode::kGlowOnly;
+
+        const int expansion = static_cast<int>(std::ceil(abglow::GlowReach(settings, layer_w, layer_h)));
         const int dest_w = layer_w + 2 * expansion;
         const int dest_h = layer_h + 2 * expansion;
 
@@ -278,11 +288,6 @@ void TestGlowDoesNotSlideWithRadius() {
         for (int y = 0; y < layer_h; ++y) {
             for (int x = 0; x < layer_w; ++x) source.SetPixel(x, y, PixelF{1.0f, 1.0f, 1.0f, 1.0f});
         }
-
-        GlowSettings settings = DefaultSettings();
-        settings.threshold = 0.0f;
-        settings.radius_x = settings.radius_y = radius;
-        settings.composite = CompositeMode::kGlowOnly;
 
         GlowRender render;
         render.source = source.View();
@@ -297,12 +302,12 @@ void TestGlowDoesNotSlideWithRadius() {
         if (previous > -1000.0f && previous != -1.0f) worst = std::max(worst, std::fabs(centre - previous));
         previous = centre;
     }
-    Check(worst < 0.25f, "glow stays put as the radius animates");
+    Check(worst < 0.25f, std::string("glow stays put as the radius animates") + ModelName(model));
 }
 
 // The same glow, rendered at each of After Effects' resolutions, must come out
 // the same size in composition space.
-void TestSizeIsResolutionIndependent() {
+void TestSizeIsResolutionIndependent(GlowModel model) {
     MallocAllocator allocator;
     ThreadPoolRunner runner(4);
 
@@ -314,11 +319,17 @@ void TestSizeIsResolutionIndependent() {
 
     for (int den : {1, 2, 3, 4}) {
         const float radius = radius_comp / static_cast<float>(den);
-        const float sigma = abglow::RadiusToSigma(radius);
         const int layer_w = layer_w_comp / den;
         const int layer_h = layer_h_comp / den;
-        const int expansion = static_cast<int>(
-            std::ceil(abglow::MakeGlowPlan(sigma, Quality::kNormal, layer_w, layer_h).Reach()));
+
+        GlowSettings settings = DefaultSettings();
+        settings.model = model;
+        settings.resolution = 1.0f / static_cast<float>(den);
+        settings.threshold = 0.0f;
+        settings.radius_x = settings.radius_y = radius;
+        settings.composite = CompositeMode::kGlowOnly;
+
+        const int expansion = static_cast<int>(std::ceil(abglow::GlowReach(settings, layer_w, layer_h)));
         const int dest_w = layer_w + 2 * expansion;
         const int dest_h = layer_h + 2 * expansion;
 
@@ -327,11 +338,6 @@ void TestSizeIsResolutionIndependent() {
         for (int y = 0; y < layer_h; ++y) {
             for (int x = 0; x < layer_w; ++x) source.SetPixel(x, y, PixelF{1.0f, 1.0f, 1.0f, 1.0f});
         }
-
-        GlowSettings settings = DefaultSettings();
-        settings.threshold = 0.0f;
-        settings.radius_x = settings.radius_y = radius;
-        settings.composite = CompositeMode::kGlowOnly;
 
         GlowRender render;
         render.source = source.View();
@@ -346,7 +352,8 @@ void TestSizeIsResolutionIndependent() {
         widest = std::max(widest, width);
         narrowest = std::min(narrowest, width);
     }
-    Check(widest <= narrowest * 1.02f, "glow is the same size at every render resolution");
+    Check(widest <= narrowest * 1.02f,
+          std::string("glow is the same size at every render resolution") + ModelName(model));
 }
 
 // After Effects renders a reduced-resolution preview from a downsampled layer,
@@ -354,7 +361,7 @@ void TestSizeIsResolutionIndependent() {
 // pixels. Extraction has to stay linear in coverage or the same glow comes out
 // dimmer at Half and Quarter - thresholding the premultiplied value made it 8%
 // dimmer at Quarter on text.
-void TestBrightnessIsResolutionIndependent() {
+void TestBrightnessIsResolutionIndependent(GlowModel model) {
     MallocAllocator allocator;
     ThreadPoolRunner runner(4);
 
@@ -386,6 +393,8 @@ void TestBrightnessIsResolutionIndependent() {
         }
 
         GlowSettings settings = DefaultSettings();
+        settings.model = model;
+        settings.resolution = 1.0f / static_cast<float>(den);
         settings.threshold = 0.5f;
         settings.threshold_softness = 0.69f;
         settings.radius_x = settings.radius_y = radius_comp / static_cast<float>(den);
@@ -407,7 +416,8 @@ void TestBrightnessIsResolutionIndependent() {
         brightest = std::max(brightest, energy);
         dimmest = std::min(dimmest, energy);
     }
-    Check(brightest <= dimmest * 1.02, "glow is the same brightness at every render resolution");
+    Check(brightest <= dimmest * 1.02,
+          std::string("glow is the same brightness at every render resolution") + ModelName(model));
 }
 
 // Dither must not invent light. With expanded bounds most of the output buffer
@@ -493,25 +503,31 @@ void TestDitherIsQuietAndStill() {
 // same pixels either way. Sizing the pyramid to the request instead of to the
 // glow discarded source pixels outside the window and made the blur clamp
 // against its edge, which changed the glow with the viewer.
-void TestRegionOfInterestMatchesFullFrame() {
+void TestRegionOfInterestMatchesFullFrame(GlowModel model) {
     MallocAllocator allocator;
     ThreadPoolRunner runner(4);
 
     const int layer_w = 400;
     const int layer_h = 300;
-    const float radius = 300.0f;
-    const int expansion = static_cast<int>(std::ceil(
-        abglow::MakeGlowPlan(abglow::RadiusToSigma(radius), Quality::kNormal, layer_w, layer_h).Reach()));
+    GlowSettings settings = DefaultSettings();
+    settings.model = model;
+    settings.threshold = 0.5f;
+    settings.composite = CompositeMode::kGlowOnly;
+    settings.radius_x = settings.radius_y = 300.0f;
+    if (model == GlowModel::kInverseSquare) {
+        // Far enough, on a small enough budget, that the pyramid splits into a
+        // core tier over the layer and a halo tier over the reach.
+        settings.radius_x = settings.radius_y = 400.0f;
+        settings.quality = Quality::kDraft;
+        Check(abglow::PlanForLayer(settings, layer_w, layer_h).split_level > 0,
+              "the window test covers a two-tier pyramid");
+    }
+    const int expansion = static_cast<int>(std::ceil(abglow::GlowReach(settings, layer_w, layer_h)));
 
     TestImage source(layer_w, layer_h, PixelDepth::kFloat32);
     for (int y = 100; y < 200; ++y) {
         for (int x = 150; x < 250; ++x) source.SetPixel(x, y, PixelF{1.0f, 4.0f, 4.0f, 4.0f});
     }
-
-    GlowSettings settings = DefaultSettings();
-    settings.threshold = 0.5f;
-    settings.radius_x = settings.radius_y = radius;
-    settings.composite = CompositeMode::kGlowOnly;
 
     const int full_w = layer_w + 2 * expansion;
     const int full_h = layer_h + 2 * expansion;
@@ -549,7 +565,8 @@ void TestRegionOfInterestMatchesFullFrame() {
                 worst = std::max(worst, std::fabs(b - a) / scale);
             }
         }
-        Check(worst < 1e-3f, "a requested window matches the same pixels of the full render");
+        Check(worst < 1e-3f,
+              std::string("a requested window matches the same pixels of the full render") + ModelName(model));
     }
 }
 
@@ -558,7 +575,7 @@ void TestRegionOfInterestMatchesFullFrame() {
 // lag by up to a twelfth of a cell - a sawtooth with the period of the pyramid
 // step, which is the shimmer seen on a moving layer. A tent prefilter
 // reproduces linear functions, so the centroid survives the decimation.
-void TestGlowTracksSubPixelMotion() {
+void TestGlowTracksSubPixelMotion(GlowModel model) {
     MallocAllocator allocator;
     ThreadPoolRunner runner(4);
 
@@ -584,6 +601,7 @@ void TestGlowTracksSubPixelMotion() {
         }
 
         GlowSettings settings = DefaultSettings();
+        settings.model = model;
         settings.threshold = 0.5f;
         settings.radius_x = settings.radius_y = radius;
         settings.composite = CompositeMode::kGlowOnly;
@@ -615,7 +633,7 @@ void TestGlowTracksSubPixelMotion() {
         const double drift = (glow_moment / glow_mass) - (source_moment / source_mass);
         worst = std::max(worst, static_cast<float>(std::fabs(drift)));
     }
-    Check(worst < 0.05f, "glow follows the source through sub-pixel motion");
+    Check(worst < 0.05f, std::string("glow follows the source through sub-pixel motion") + ModelName(model));
 }
 
 // Clipping each channel on its own reaches the ceiling at a different
@@ -1460,6 +1478,314 @@ void TestZeroRadiusAndZeroIntensity() {
     Check(offset_dest.GetPixel(2, 2).a == 0.0f, "offset copy leaves the margin empty");
 }
 
+// Inverse Square puts the same light in every octave from the core to the
+// radius, cut off above it. The weights therefore do not sum to one: the total
+// grows with the log of the radius. The pyramid step must come from the layer
+// and the quality alone - a step that moved with the radius would resample the
+// fixed-size core and make it pop as the radius animates.
+void TestInverseSquarePlan() {
+    const int layer_w = 1920;
+    const int layer_h = 1080;
+    GlowSettings settings = DefaultSettings();
+    settings.model = GlowModel::kInverseSquare;
+    settings.falloff = 2.0f;
+
+    int first_step = -1;
+    float previous_total = 0.0f;
+    for (float radius = 10.0f; radius <= 4000.0f; radius *= 1.25f) {
+        settings.radius_x = settings.radius_y = radius;
+        const abglow::GlowPlan plan = abglow::PlanForLayer(settings, layer_w, layer_h);
+        Check(plan.level_count >= 1 && plan.level_count <= abglow::kMaxPyramidLevels, "plan level count in range");
+        Check(plan.split_level >= 0 && plan.split_level < plan.level_count, "the halo tier starts on a level");
+        if (first_step < 0) first_step = plan.base_scale;
+        Check(plan.base_scale == first_step, "the pyramid step does not move with the radius");
+        // The widest octave reaches past the radius, where the law is cut off.
+        Check(plan.effective_sigma[plan.level_count - 1] * plan.base_scale >=
+                  2.0f * abglow::RadiusToSigma(radius) * 0.999f,
+              "the ladder reaches past the radius");
+
+        float total = 0.0f;
+        for (int i = 0; i < plan.level_count; ++i) total += plan.weights[i];
+        Check(total > previous_total, "a larger radius adds light rather than spreading the same light thinner");
+        previous_total = total;
+
+        // Well inside the radius every octave carries the same light.
+        if (radius >= 400.0f) {
+            for (int i = 2; i < 5; ++i) {
+                CheckNear(plan.weights[i], abglow::kInverseSquareOctaveGain,
+                          abglow::kInverseSquareOctaveGain * 0.1f, "every octave below the radius carries the same light");
+            }
+        }
+    }
+
+    // Falloff moves light between the core and the halo; it does not change
+    // how much there is.
+    settings.radius_x = settings.radius_y = 300.0f;
+    float totals[3] = {};
+    float cores[3] = {};
+    const float falloffs[3] = {1.5f, 2.0f, 3.0f};
+    for (int k = 0; k < 3; ++k) {
+        settings.falloff = falloffs[k];
+        const abglow::GlowPlan plan = abglow::PlanForLayer(settings, layer_w, layer_h);
+        for (int i = 0; i < plan.level_count; ++i) totals[k] += plan.weights[i];
+        cores[k] = plan.weights[0];
+    }
+    CheckNear(totals[0], totals[1], totals[1] * 1e-3f, "falloff leaves the total light alone");
+    CheckNear(totals[2], totals[1], totals[1] * 1e-3f, "falloff leaves the total light alone");
+    Check(cores[0] < cores[1] && cores[1] < cores[2], "a steeper falloff puts more of the light in the core");
+}
+
+// Below its cutoff the inverse-square glow is a power law, and the exponent is
+// the Falloff that was asked for.
+void TestInverseSquareFollowsThePowerLaw() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int size = 1600;
+    for (float falloff : {1.5f, 2.0f, 3.0f}) {
+        TestImage source(size, size, PixelDepth::kFloat32);
+        source.SetPixel(size / 2, size / 2, PixelF{1.0f, 500.0f, 500.0f, 500.0f});
+
+        GlowSettings settings = DefaultSettings();
+        settings.model = GlowModel::kInverseSquare;
+        settings.threshold = 0.0f;
+        settings.radius_x = settings.radius_y = 600.0f;
+        settings.composite = CompositeMode::kGlowOnly;
+        settings.falloff = falloff;
+
+        TestImage dest(size, size, PixelDepth::kFloat32);
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
+              "inverse-square falloff render succeeds");
+
+        // From clear of the core to half the radius sigma, where the cutoff has
+        // not started to bite.
+        const abglow::GlowPlan plan = abglow::PlanForRender(settings, render);
+        const double low = 4.0 * plan.effective_sigma[0] * plan.base_scale;
+        const double high = 0.5 * abglow::RadiusToSigma(settings.radius_x);
+        double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+        int n = 0;
+        for (double r = low; r <= high; r *= 1.06) {
+            const double v = dest.GetPixel(size / 2 + static_cast<int>(std::lround(r)), size / 2).g;
+            if (v <= 0.0) continue;
+            const double lr = std::log(r);
+            const double lv = std::log(v);
+            sx += lr;
+            sy += lv;
+            sxx += lr * lr;
+            sxy += lr * lv;
+            ++n;
+        }
+        Check(n > 8, "inverse-square fit has samples");
+        const double slope = -(n * sxy - sx * sy) / (n * sxx - sx * sx);
+        // Measured 1.571 / 2.037 / 3.008.
+        Check(std::fabs(slope - falloff) < 0.12, "inverse-square glow follows 1/r^" +
+                                                     std::to_string(static_cast<int>(falloff * 10)) + " as asked");
+    }
+}
+
+// Under Inverse Square the radius is how far the light reaches. Quadrupling it
+// has to carry the glow much further out while the hot core hugging the shape
+// stays close to what it was - the opposite of a blur, whose core dims as it
+// spreads.
+void TestRadiusExtendsTheReachNotTheCore() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 1400;
+    const int height = 900;
+    TestImage source(width, height, PixelDepth::kFloat32);
+    for (int y = 440; y < 460; ++y) {
+        for (int x = 300; x < 1100; ++x) source.SetPixel(x, y, PixelF{1.0f, 1.0f, 1.0f, 1.0f});
+    }
+
+    auto profile = [&](GlowModel model, float radius, float* near, float* far) {
+        GlowSettings settings = DefaultSettings();
+        settings.model = model;
+        settings.falloff = 2.0f;
+        settings.threshold = 0.0f;
+        settings.radius_x = settings.radius_y = radius;
+        settings.composite = CompositeMode::kGlowOnly;
+        TestImage dest(width, height, PixelDepth::kFloat32);
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
+              "reach render succeeds");
+        *near = dest.GetPixel(700, 461).g;
+        *far = dest.GetPixel(700, 609).g;
+    };
+
+    float near_small = 0.0f, far_small = 0.0f, near_large = 0.0f, far_large = 0.0f;
+    profile(GlowModel::kInverseSquare, 100.0f, &near_small, &far_small);
+    profile(GlowModel::kInverseSquare, 400.0f, &near_large, &far_large);
+    // Measured: 2 px out 0.688 -> 0.809, 150 px out 0.0004 -> 0.012.
+    Check(near_small > 0.5f, "the core next to the shape is bright");
+    Check(near_large > near_small && near_large < near_small * 1.3f, "a larger radius keeps the core");
+    Check(far_large > far_small * 10.0f, "a larger radius carries the light further");
+
+    profile(GlowModel::kClassic, 100.0f, &near_small, &far_small);
+    profile(GlowModel::kClassic, 400.0f, &near_large, &far_large);
+    Check(near_large < near_small, "classic spreads the same light thinner as the radius grows");
+}
+
+// The core is a fixed size, so nothing about the pyramid it is sampled on may
+// change as the radius animates. The step is fixed by the layer; the halo tier
+// starts wherever the budget needs, which changes only where the extents run,
+// not what is in them. A radius sweep across those changes must stay smooth
+// right next to the shape - folding the core into a coarser step used to make
+// it jump by a fifth there.
+void TestInverseSquareDoesNotPop() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 1400;
+    const int height = 800;
+    TestImage source(width, height, PixelDepth::kFloat32);
+    for (int y = 390; y < 410; ++y) {
+        for (int x = 300; x < 1100; ++x) source.SetPixel(x, y, PixelF{1.0f, 1.0f, 1.0f, 1.0f});
+    }
+
+    GlowSettings settings = DefaultSettings();
+    settings.model = GlowModel::kInverseSquare;
+    settings.falloff = 2.0f;
+    settings.threshold = 0.0f;
+    settings.composite = CompositeMode::kGlowOnly;
+
+    const int distances[] = {1, 2, 4, 8, 16};
+    float previous[5] = {};
+    float worst = 0.0f;
+    int splits_seen = 0;
+    int last_split = -1;
+    for (float radius = 180.0f; radius <= 260.0f; radius += 4.0f) {
+        settings.radius_x = settings.radius_y = radius;
+        TestImage dest(width, height, PixelDepth::kFloat32);
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk, "sweep render succeeds");
+        const int split = abglow::PlanForRender(settings, render).split_level;
+        if (split != last_split) ++splits_seen;
+        last_split = split;
+        for (int k = 0; k < 5; ++k) {
+            const float v = dest.GetPixel(700, 409 + distances[k]).g;
+            if (previous[k] > 0.0f) worst = std::max(worst, std::fabs(v / previous[k] - 1.0f));
+            previous[k] = v;
+        }
+    }
+    Check(splits_seen >= 2, "the sweep crosses a change of tier");
+    // Measured 1.2%, all of it the light a larger radius adds.
+    Check(worst < 0.03f, "the core stays continuous as the radius animates");
+}
+
+// After Effects blends 8 and 16 bpc layers in their encoded space, so a pixel
+// over black shows its premultiplied value as it stands. The glow is light:
+// over black it has to show Encode(light). Built as Encode(light / coverage)
+// times coverage instead, a glow spilling into a transparent layer showed a
+// third of its light at the edge and a tenth of it in the tail.
+void TestGlowIsLightOverBlack() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 400;
+    const int height = 300;
+    TestImage linear_source(width, height, PixelDepth::kFloat32);
+    TestImage encoded_source(width, height, PixelDepth::kBits8);
+    for (int y = 130; y < 170; ++y) {
+        for (int x = 180; x < 220; ++x) {
+            linear_source.SetPixel(x, y, PixelF{1.0f, 1.0f, 1.0f, 1.0f});
+            encoded_source.SetPixel(x, y, PixelF{1.0f, 1.0f, 1.0f, 1.0f});
+        }
+    }
+
+    for (GlowModel model : {GlowModel::kClassic, GlowModel::kInverseSquare}) {
+        GlowSettings settings = DefaultSettings();
+        settings.model = model;
+        settings.threshold = 0.0f;
+        settings.radius_x = settings.radius_y = 120.0f;
+        settings.dither = false;
+
+        // The reference: the light itself, in linear float.
+        settings.composite = CompositeMode::kGlowOnly;
+        settings.working_space = WorkingSpace::kLinear;
+        TestImage light(width, height, PixelDepth::kFloat32);
+        GlowRender reference;
+        reference.source = linear_source.View();
+        reference.dest = light.View();
+        Check(abglow::RenderGlow(settings, reference, allocator, runner) == GlowResult::kOk,
+              "light reference renders");
+
+        settings.composite = CompositeMode::kAdd;
+        settings.working_space = WorkingSpace::kSrgb;
+        TestImage dest(width, height, PixelDepth::kBits8);
+        GlowRender render;
+        render.source = encoded_source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk, "8 bpc glow renders");
+
+        const abglow::TransferFunction& srgb = abglow::TransferFunction::Srgb();
+        float worst = 0.0f;
+        bool premultiplied = true;
+        for (int x = 222; x < 330; x += 3) {
+            const float expected = light.GetPixel(x, 150).g;
+            if (expected < 0.01f) continue;
+            const PixelF p = dest.GetPixel(x, 150);
+            worst = std::max(worst, std::fabs(srgb.Decode(p.g) / expected - 1.0f));
+            if (p.g > p.a + 1.0f / 255.0f) premultiplied = false;
+        }
+        Check(worst < 0.06f, std::string("over black the glow shows its own light") + ModelName(model));
+        Check(premultiplied, std::string("the glow is a valid premultiplied pixel") + ModelName(model));
+    }
+}
+
+// Burn to White: the more a colour is overexposed the whiter it gets, which is
+// the hot core of a light. Light the output can show keeps its colour, and
+// float output keeps its HDR value.
+void TestBurnToWhite() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 500;
+    const int height = 400;
+    TestImage source(width, height, PixelDepth::kFloat32);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            if (std::hypot(x - 250.0, y - 200.0) < 40.0) source.SetPixel(x, y, PixelF{1.0f, 0.0f, 0.8f, 1.0f});
+        }
+    }
+
+    auto render_with = [&](abglow::HighlightRolloff mode, PixelDepth depth, PixelF* core, PixelF* tail) {
+        GlowSettings settings = DefaultSettings();
+        settings.model = GlowModel::kInverseSquare;
+        settings.falloff = 2.0f;
+        settings.threshold = 0.3f;
+        settings.radius_x = settings.radius_y = 150.0f;
+        settings.intensity = 3.0f;
+        settings.rolloff = mode;
+        TestImage dest(width, height, depth);
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk, "burn render succeeds");
+        *core = dest.GetPixel(250, 200);
+        *tail = dest.GetPixel(250, 330);
+    };
+
+    PixelF core, tail, hue_core, hue_tail;
+    render_with(abglow::HighlightRolloff::kBurnToWhite, PixelDepth::kBits8, &core, &tail);
+    render_with(abglow::HighlightRolloff::kPreserveHue, PixelDepth::kBits8, &hue_core, &hue_tail);
+    Check(core.r > 0.8f * core.b, "an overexposed cyan burns to white");
+    Check(hue_core.r < 0.01f, "preserve hue keeps it cyan");
+    CheckNear(tail.r, hue_tail.r, 1.0f / 255.0f, "light the output can show keeps its colour");
+    CheckNear(tail.b, hue_tail.b, 1.0f / 255.0f, "burning leaves the tail's brightness alone");
+
+    render_with(abglow::HighlightRolloff::kBurnToWhite, PixelDepth::kFloat32, &core, &tail);
+    Check(core.b > 1.0f, "float output keeps its HDR value");
+    Check(core.r > 0.8f * core.b, "float output burns too");
+}
+
 }  // namespace
 
 int main() {
@@ -1469,12 +1795,14 @@ int main() {
     TestEnergyConservation();
     TestRadialFalloff();
     TestNoUpsampleCreases();
-    TestGlowDoesNotSlideWithRadius();
-    TestSizeIsResolutionIndependent();
-    TestBrightnessIsResolutionIndependent();
+    for (GlowModel model : {GlowModel::kClassic, GlowModel::kInverseSquare}) {
+        TestGlowDoesNotSlideWithRadius(model);
+        TestSizeIsResolutionIndependent(model);
+        TestBrightnessIsResolutionIndependent(model);
+        TestRegionOfInterestMatchesFullFrame(model);
+        TestGlowTracksSubPixelMotion(model);
+    }
     TestDitherIsQuietAndStill();
-    TestRegionOfInterestMatchesFullFrame();
-    TestGlowTracksSubPixelMotion();
     TestHighlightRolloffKeepsHue();
     TestGlowIsBloomNotBlur();
     TestSmallAndLargeShapesGlowAlike();
@@ -1495,6 +1823,12 @@ int main() {
     TestOffsetPassThrough();
     TestEmptySourceAndBadArguments();
     TestZeroRadiusAndZeroIntensity();
+    TestInverseSquarePlan();
+    TestInverseSquareFollowsThePowerLaw();
+    TestRadiusExtendsTheReachNotTheCore();
+    TestInverseSquareDoesNotPop();
+    TestGlowIsLightOverBlack();
+    TestBurnToWhite();
 
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

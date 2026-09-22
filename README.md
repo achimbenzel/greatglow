@@ -12,16 +12,28 @@ blurred copy of the layer composited with Add.
 source ─► highlight extraction (soft knee, linear light)
        ─► downsample to pyramid level 0
        ─► blur / downsample cascade (one Gaussian per octave)
-       ─► weighted collapse back up (six octaves, fine core to wide halo)
+       ─► weighted collapse back up (fine core to wide halo)
        ─► exposure · intensity · saturation · tint
-       ─► composite over the original, expanding the layer bounds
+       ─► composite over the original as light, expanding the layer bounds
 ```
+
+The default **Glow Model** is *Inverse Square*: the same light in every octave
+from a fixed one-pixel core out to the radius, which is what a 1/r² veiling
+glare is. The core hugging the source is always there and Radius sets how far
+the light reaches, adding light as it grows — the look Deep Glow is known for.
+Measured against a Deep Glow render of white text, the glow at each distance
+from the letters lands within about a dozen 8-bit code values of it, where the
+previous default fell short by up to a hundred (see
+[Architecture](docs/architecture.md#the-inverse-square-model)). *Classic* keeps
+the earlier energy-conserving bloom, where the whole kernel scales with the
+radius and a bigger glow is a dimmer one.
 
 * 8, 16 and 32 bits per channel, with all internal maths in 32-bit float
 * HDR safe: values above 1.0 are never clamped in 32 bpc
 * SmartFX, multi-frame rendering, host memory and the host thread pool
-* Cost stays nearly flat as the radius grows — at 4K a radius of 1000 renders
-  faster than a radius of 20, because a wide glow is built on a coarser pyramid
+* Cost stays nearly flat as the radius grows, because a wide glow is built on a
+  coarser pyramid — at 4K, Normal quality, radius 20 to 1000 costs 110–250 ms
+  on four cores under either model
 
 ## Layout
 
@@ -76,7 +88,7 @@ Restart After Effects; the effect appears under **Effect ▸ AB Tools ▸ Profou
 Pick **one** of those two folders. After Effects scans both, so a copy left in
 the other one can be the copy it loads, and replacing the file you were
 thinking of changes nothing. The effect's parameters end with a group named
-after the build it came from (`v1.1.0 (abc1234)`), so the loaded build can be
+after the build it came from (`v1.2.0 (abc1234)`), so the loaded build can be
 read straight off the panel. To find every copy on the machine:
 
 ```powershell
@@ -104,22 +116,23 @@ Ship release builds from Visual Studio; mingw is for verification.
 |-----------|-----------------|--------------|
 | Threshold | 0 – 4 (0.5) | Brightness where the glow starts, in working-space units: 0.5 is mid grey, 1.0 is white, above 1.0 only HDR highlights glow. |
 | Threshold Softness | 0 – 100 % (40 %) | Width of the knee below the threshold. 0 is a hard cut; higher values ramp the glow in smoothly and avoid edges appearing in the glow. |
-| Radius | 0 – 4000 px (40) | Size of the glow's bloom, in full-resolution pixels. The octave ladder carries one octave past it, so light still trails measurably out to about twice this before it fades. |
+| Radius | 0 – 4000 px (150) | Under Inverse Square, how far the light reaches: the octaves run from a fixed core out to the radius and are cut off past it, so a larger radius carries the glow further and adds light without dimming the core. Under Classic, the size of the whole bloom, which dims as it grows. |
 | Intensity | 0 – 10000 % (100 %) | Strength of the generated light. 0 turns the effect into a pass-through. |
-| Exposure | −10 – +10 stops (0) | Brightness of the glow in stops; +1 doubles it. Useful for large radii, where the same light is spread over more area. |
+| Exposure | −10 – +10 stops (0) | Brightness of the glow in stops; +1 doubles it. |
 | Saturation | 0 – 400 % (100 %) | Colour of the glow: 0 is white light, 100 % keeps the source colour, above that exaggerates it. |
 | Tint | colour (white) | Colour multiplied into the glow. |
 | Tint Amount | 0 – 100 % (0 %) | How much of the tint is mixed in. |
 | Quality | Draft / Normal / High / Best | Trades the resolution of the diffusion pyramid, and the reconstruction filter used to scale it back up, against speed. It changes how finely the glow is resolved, not its size or shape — measured spread across the four settings is under 2.5%. |
 | Composite | Add / Screen / Glow Only | How the glow is combined with the source. Glow Only is useful for inspecting the glow or building your own composite. |
 | Working Space | Auto / Linear / sRGB | How to interpret the incoming pixels. Auto treats 32 bpc as linear and 8/16 bpc as sRGB, which matches the usual project setups. |
-| Falloff | 1.0 – 3.0 (1.4) | The exponent *n* of the 1/rⁿ the glow follows. 2.0 is the Stiles–Holladay inverse-square law that the CIE disability-glare equations use for real veiling glare. Lower puts more light at the wide scales, so Radius has more say in the glow's apparent size; higher concentrates it and makes individual highlights glow on their own. |
-| Highlight Rolloff | Preserve Hue / Clip | What to do where the glow leaves the output's range. Clipping each channel on its own reaches the ceiling at a different brightness per channel, so an over-driven saturated colour drifts to white; Preserve Hue rolls the whole triple off together and keeps the colour. 32 bpc output is never touched either way. |
+| Falloff | 1.0 – 3.0 (2.0) | The exponent *n* of the 1/rⁿ the glow follows. 2.0 is the Stiles–Holladay inverse-square law that the CIE disability-glare equations use for real veiling glare. Under Inverse Square it moves light between the core and the halo without changing how much there is: lower is a softer, hazier glow, higher a tighter, hotter one. Under Classic, lower gives Radius more say in the glow's apparent size. |
+| Highlight Rolloff | Preserve Hue / Clip / Burn to White | What to do where the lit result leaves the output's range. Clipping each channel on its own reaches the ceiling at a different brightness per channel, so an over-driven saturated colour drifts to white; Preserve Hue rolls the whole triple off together and keeps the colour. Burn to White does on purpose and smoothly what Clip does by accident: the more a colour is overexposed, the whiter it gets, which is the white-hot core of a neon tube — while the glow around it, which the output can show, keeps its colour. Preserve Hue and Clip leave 32 bpc output alone; Burn to White whitens it too but keeps its HDR values. |
 | Expand Bounds | on | Let the glow spread past the layer's edges by growing the layer's bounds. |
 | Saturation Bias | −100 – 200 % (0 %) | Weights the extraction by how colourful a pixel is. Positive makes a saturated highlight glow harder than a white one of the same brightness; negative does the reverse. |
 | Source Opacity | 0 – 100 % (100 %) | Fades the layer the glow sits on without touching the glow. At 0 % only the glow is left, but the source's alpha still shapes it — unlike Glow Only, which drops the source entirely. |
 | Unmult | off | For footage delivered on black with no usable alpha. Coverage is read from the brightest channel instead of from an alpha that is 1 everywhere, so dark areas emit nothing and a dim area emits in proportion to its brightness. |
 | Multiply Red / Green / Blue | 10 – 400 % (100 %) | Per-channel radius. A lens does not focus every wavelength at the same distance, so its veiling glare is a slightly different size per channel; pulling these apart gives the glow that chromatic fringe. The channel with the larger multiplier spreads wider and therefore peaks lower. |
+| Glow Model | Inverse Square / Classic | Inverse Square: the same light in every octave from a fixed one-pixel core to the radius, so Radius is reach and the core stays hot. Classic: the energy-conserving bloom, which scales as a whole with the radius. |
 
 Radius is in full-resolution pixels: it is scaled automatically for draft
 resolutions and for non-square pixels, so a glow stays round and the same size
@@ -136,6 +149,17 @@ with literal numbers in `AbGlowParams.h` and `AbGlowParams.cpp` and pinned by
 build from v1.0.0 onward opens correctly in any later build. The effect's match
 name is `ABBZ ProfoundGlow`; the earlier `AB Glow` is a separate effect, so old
 projects are untouched and both can be installed side by side.
+
+Opening correctly is not the same as looking the same, though. Two things in
+v1.2.0 change the look of a project saved by an earlier build:
+
+* **Glow Model** is new, so an older project gets its default, Inverse Square.
+  Set it to Classic to get the earlier look back; the project's own Radius and
+  Falloff are kept either way.
+* **8 and 16 bpc glows over transparency are brighter.** The glow is now
+  written as light over black: a glow spilling into a transparent layer used to
+  show a third of its light at the edge and a tenth of it in the tail. Opaque
+  pixels, and everything in a linear working space, come out as before.
 
 ### Known limitation: anisotropy
 

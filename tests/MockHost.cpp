@@ -322,6 +322,8 @@ struct RenderOptions {
     int quality = 2;  // 1 based popup value
     std::string label;
     bool advanced = false;  // exercise the appended Advanced group
+    int model = 1;          // Glow Model, 1 based: Inverse Square, Classic
+    int rolloff = 1;        // Highlight Rolloff, 1 based
 };
 
 // Indices must match ParamIndex in AbGlowParams.h.
@@ -337,13 +339,15 @@ enum {
     kIndexComposite = 15,
     kIndexWorkingSpace = 16,
     kIndexExpandBounds = 17,
+    kIndexRolloff = 18,
     kIndexSaturationBias = 24,
     kIndexSourceOpacity = 25,
     kIndexUnmult = 26,
     kIndexMultiplyRed = 27,
     kIndexMultiplyGreen = 28,
     kIndexMultiplyBlue = 29,
-    kParamCountAsShipped = 31
+    kIndexGlowModel = 31,
+    kParamCountAsShipped = 32
 };
 
 bool RunRender(EffectMainFn effect_main, const RenderOptions& options, const std::string& out_dir) {
@@ -379,6 +383,8 @@ bool RunRender(EffectMainFn effect_main, const RenderOptions& options, const std
     SetPopupParam(&host, kIndexComposite - 1, 1);
     SetPopupParam(&host, kIndexWorkingSpace - 1, 1);
     SetCheckboxParam(&host, kIndexExpandBounds - 1, options.expand_bounds);
+    SetPopupParam(&host, kIndexRolloff - 1, options.rolloff);
+    SetPopupParam(&host, kIndexGlowModel - 1, options.model);
     if (options.advanced) {
         SetFloatParam(&host, kIndexSaturationBias - 1, 60.0f);
         SetFloatParam(&host, kIndexSourceOpacity - 1, 70.0f);
@@ -503,6 +509,9 @@ int main(int argc, char** argv) {
         {8, 480, 270, 60.0f, 0.5f, false, 1, "no_expand"},
         {8, 97, 61, 30.0f, 0.2f, true, 3, "odd_size"},
         {32, 480, 270, 60.0f, 0.5f, true, 2, "advanced", true},
+        {8, 480, 270, 60.0f, 0.5f, true, 2, "classic", false, 2},
+        {16, 480, 270, 250.0f, 0.5f, true, 2, "burn_to_white", false, 1, 3},
+        {8, 1280, 720, 600.0f, 0.2f, true, 2, "two_tier", false, 1, 3},
     };
 
     for (const RenderOptions& options : cases) {

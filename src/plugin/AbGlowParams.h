@@ -42,7 +42,8 @@ enum ParamIndex {
     kParamMultiplyGreen = 28,
     kParamMultiplyBlue = 29,
     kParamAdvancedGroupEnd = 30,
-    kParamCount = 31
+    kParamGlowModel = 31,
+    kParamCount = 32
 };
 
 PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data);

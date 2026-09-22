@@ -64,6 +64,54 @@ float CascadedSigma(float level_sigma, int level) {
     return level_sigma * CascadeFactor(level);
 }
 
+// Level-0 pixels each quality may use.
+long long PixelBudget(Quality quality) {
+    switch (quality) {
+        case Quality::kDraft: return 2LL << 20;
+        case Quality::kNormal: return 4LL << 20;
+        case Quality::kHigh: return 9LL << 20;
+        case Quality::kBest: return 36LL << 20;
+    }
+    return 4LL << 20;
+}
+
+// Per-level blur of the inverse-square ladder, in level pixels. Its rungs are
+// not solved onto the radius the way the classic ladder's are: they sit at
+// fixed sizes, and the radius moves the weights across them instead. Solving
+// them onto the radius would move the finest rung - the core - every time the
+// radius crossed an octave, which pops.
+constexpr float kInverseSquareLevelSigma = 1.0f;
+
+// Where the inverse-square ladder stops, and where the bounds stop, in units of
+// the radius sigma. The density is down to an eighth of its plateau at twice
+// the radius, and the bounds are measured from a little past that.
+constexpr float kInverseSquareTop = 2.0f;
+constexpr float kInverseSquareReach = 2.2f;
+
+// Light per octave of sigma at s = sigma / radius sigma. s^(2-n) is the power
+// law - flat, for inverse square - and the Gaussian factor cuts it off at the
+// radius: untouched below it, an eighth at twice it, gone by three times it.
+double OctaveDensity(double s, double exponent) {
+    return std::pow(s, exponent) * std::exp(-0.5 * s * s);
+}
+
+// Light between two sigmas, integrated over log2(sigma). Integrating over the
+// band each rung stands for, rather than sampling the density at the rung,
+// is what keeps the total independent of where the rungs happen to fall.
+double OctaveLight(double low, double high, double sigma_r, double exponent) {
+    if (!(sigma_r > 0.0)) return 0.0;
+    // Past six radii the density is below 1e-7 of its plateau.
+    high = std::min(high, 6.0 * sigma_r);
+    if (!(high > low) || !(low > 0.0)) return 0.0;
+    const double a = std::log2(low / sigma_r);
+    const double b = std::log2(high / sigma_r);
+    const int steps = std::max(1, static_cast<int>(std::ceil((b - a) * 16.0)));
+    const double h = (b - a) / static_cast<double>(steps);
+    double sum = 0.0;
+    for (int k = 0; k < steps; ++k) sum += OctaveDensity(std::exp2(a + (static_cast<double>(k) + 0.5) * h), exponent);
+    return sum * h;
+}
+
 }  // namespace
 
 float GlowPlan::EffectiveSigma() const {
@@ -75,6 +123,7 @@ float GlowPlan::EffectiveSigma() const {
 }
 
 float GlowPlan::Reach() const {
+    if (reach_sigma > 0.0f) return reach_sigma * 3.2f;
     // The widest octave sets how far the glow carries; the mixture's RMS sigma
     // is much smaller than that once the fine octaves are in it.
     const int top = level_count > 0 ? level_count - 1 : 0;
@@ -82,13 +131,7 @@ float GlowPlan::Reach() const {
 }
 
 int MinimumBaseScale(int width, int height, Quality quality) {
-    long long budget = 4LL << 20;
-    switch (quality) {
-        case Quality::kDraft: budget = 2LL << 20; break;
-        case Quality::kNormal: budget = 4LL << 20; break;
-        case Quality::kHigh: budget = 9LL << 20; break;
-        case Quality::kBest: budget = 36LL << 20; break;
-    }
+    const long long budget = PixelBudget(quality);
     const long long pixels = static_cast<long long>(width) * static_cast<long long>(height);
     int scale = 1;
     while (scale < kMaxBaseScale && pixels / (static_cast<long long>(scale) * scale) > budget) ++scale;
@@ -176,6 +219,88 @@ GlowPlan MakeGlowPlan(float sigma, Quality quality, int layer_width, int layer_h
         if (channel_sum[0] > 0.0f) plan.channel_weights[i].r /= channel_sum[0];
         if (channel_sum[1] > 0.0f) plan.channel_weights[i].g /= channel_sum[1];
         if (channel_sum[2] > 0.0f) plan.channel_weights[i].b /= channel_sum[2];
+    }
+    return plan;
+}
+
+GlowPlan MakeInverseSquarePlan(float sigma, float core_sigma, Quality quality, int layer_width, int layer_height,
+                               int min_base_scale, float falloff, float red_scale, float green_scale,
+                               float blue_scale) {
+    GlowPlan plan;
+    const float level_sigma = kInverseSquareLevelSigma;
+    const float spread = std::sqrt(1.0f + kResamplingVariance / (level_sigma * level_sigma));
+    const float sigma_r = std::max(sigma, 0.0f);
+    const float core = std::max(core_sigma, 1.0e-3f);
+    const int width = std::max(layer_width, 1);
+    const int height = std::max(layer_height, 1);
+
+    // A channel with a larger multiplier has a larger radius, so the ladder has
+    // to reach the widest of them.
+    const float scales[3] = {std::max(red_scale, 0.05f), std::max(green_scale, 0.05f), std::max(blue_scale, 0.05f)};
+    const float widest_scale = std::max(1.0f, std::max(scales[0], std::max(scales[1], scales[2])));
+    const float top_sigma = kInverseSquareTop * sigma_r * widest_scale;
+
+    auto rung = [&](int base, int level) {
+        return static_cast<float>(base) * CascadedSigma(level_sigma, level) * spread;
+    };
+    // The layer alone decides the step; it only grows past that if the ladder
+    // would otherwise run out of levels, which takes a radius far beyond the
+    // slider's range.
+    int base = std::clamp(std::max(min_base_scale, MinimumBaseScale(width, height, quality)), 1, kMaxBaseScale);
+    int count = 1;
+    for (;;) {
+        count = 1;
+        while (count < kMaxPyramidLevels && rung(base, count - 1) < top_sigma) ++count;
+        if (rung(base, count - 1) >= top_sigma || base >= kMaxBaseScale) break;
+        ++base;
+    }
+    plan.base_scale = base;
+    plan.level_count = count;
+    plan.level_sigma = level_sigma;
+    for (int i = 0; i < count; ++i) plan.effective_sigma[i] = CascadedSigma(level_sigma, i) * spread;
+    plan.reach_sigma = std::max(kInverseSquareReach * sigma_r * widest_scale, rung(base, 0));
+
+    // The halo tier starts at the first level whose full span fits the budget.
+    const long long reach = static_cast<long long>(std::ceil(plan.Reach()));
+    const long long span_w = static_cast<long long>(width) + 2 * reach;
+    const long long span_h = static_cast<long long>(height) + 2 * reach;
+    const long long budget = PixelBudget(quality);
+    int split = 0;
+    while (split < count - 1) {
+        const long long step = static_cast<long long>(base) << split;
+        if ((span_w / step + 1) * (span_h / step + 1) <= budget) break;
+        ++split;
+    }
+    plan.split_level = split;
+
+    // Each rung carries the light of the band of scales around it: from the
+    // geometric midpoint with the rung below to the one with the rung above.
+    // Everything finer than the first rung - the core, which a coarse pyramid
+    // cannot resolve - folds into it, and everything past the last folds into
+    // that, so the total does not depend on where the grid put the rungs.
+    double edges[kMaxPyramidLevels + 1];
+    edges[0] = core;
+    for (int i = 1; i < count; ++i) edges[i] = std::max<double>(core, std::sqrt(rung(base, i - 1) * rung(base, i)));
+    edges[count] = 1.0e30;
+
+    const double exponent = 2.0 - static_cast<double>(std::clamp(falloff, 1.0f, 3.0f));
+    // Falloff moves light between the core and the halo; it does not change how
+    // much there is. The total is always that of inverse square at this radius.
+    const double reference = OctaveLight(core, 1.0e30, sigma_r, 0.0);
+
+    auto fill = [&](double channel_sigma, float* out) {
+        const double total = OctaveLight(core, 1.0e30, channel_sigma, exponent);
+        const double norm = total > 0.0 ? kInverseSquareOctaveGain * reference / total : 0.0;
+        for (int i = 0; i < count; ++i) {
+            out[i] = static_cast<float>(norm * OctaveLight(edges[i], edges[i + 1], channel_sigma, exponent));
+        }
+    };
+
+    fill(sigma_r, plan.weights);
+    float channel[3][kMaxPyramidLevels] = {};
+    for (int c = 0; c < 3; ++c) fill(sigma_r * scales[c], channel[c]);
+    for (int i = 0; i < count; ++i) {
+        plan.channel_weights[i] = PixelF{plan.weights[i], channel[0][i], channel[1][i], channel[2][i]};
     }
     return plan;
 }

@@ -130,6 +130,16 @@ GlowSettings Base() {
     return s;
 }
 
+// The plug-in's defaults: the inverse-square model at the radius a new instance
+// gets.
+GlowSettings InverseSquare() {
+    GlowSettings s = Base();
+    s.model = abglow::GlowModel::kInverseSquare;
+    s.falloff = 2.0f;
+    s.radius_x = s.radius_y = 150.0f;
+    return s;
+}
+
 // Measures where the glow of a point source falls to a fraction of its peak,
 // which is how the radius control is calibrated.
 void ReportFalloff(MallocAllocator& allocator, abglow::TaskRunner& runner) {
@@ -260,6 +270,26 @@ int main(int argc, char** argv) {
     {
         Variant v{"linear_space", Base()};
         v.settings.working_space = WorkingSpace::kLinear;
+        variants.push_back(v);
+    }
+    {
+        Variant v{"inverse_square", InverseSquare()};
+        variants.push_back(v);
+    }
+    {
+        Variant v{"inverse_square_large", InverseSquare()};
+        v.settings.radius_x = v.settings.radius_y = 400.0f;
+        variants.push_back(v);
+    }
+    {
+        Variant v{"inverse_square_falloff3", InverseSquare()};
+        v.settings.falloff = 3.0f;
+        variants.push_back(v);
+    }
+    {
+        Variant v{"burn_to_white", InverseSquare()};
+        v.settings.intensity = 2.0f;
+        v.settings.rolloff = abglow::HighlightRolloff::kBurnToWhite;
         variants.push_back(v);
     }
 

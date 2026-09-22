@@ -8,7 +8,7 @@
 #define AB_GLOW_DESCRIPTION "High dynamic range glow with multi-scale light diffusion."
 
 #define AB_GLOW_VERSION_MAJOR 1
-#define AB_GLOW_VERSION_MINOR 1
+#define AB_GLOW_VERSION_MINOR 2
 #define AB_GLOW_VERSION_BUG 0
 #define AB_GLOW_VERSION_BUILD 1
 

@@ -11,7 +11,7 @@ AbGlowRender.cpp     SmartFX pre-render / render, rectangle maths
 AeAdapters.cpp       host memory and host thread pool behind core interfaces
 ────────────────────────────────────────────────────────────────────────────
 core/GlowPipeline    orchestration: extract, diffuse, colour, composite
-core/GlowPlan        how many octaves, at what scale, with what weights
+core/GlowPlan        how many octaves, at what scale, with what weights, per model
 core/Blur            separable Gaussian
 core/Resample        pyramid downsample and weighted upsample
 core/Transfer        sRGB ⇄ linear, table driven
@@ -72,6 +72,11 @@ and costs nothing; the two passes are separable and each source row is filtered
 once, so the whole change costs about 3%.
 
 ### Multi-scale diffusion
+
+Two models share the pyramid; the **Glow Model** parameter picks one. This
+section and the next describe *Classic*; [the inverse-square
+model](#the-inverse-square-model), the default, reuses the same pyramid and
+reconstruction but weights it differently.
 
 The kernel is a weighted sum of Gaussians, one per octave:
 
@@ -262,12 +267,118 @@ the widest octave's σ**, so the halo around an extended shape carries out to
 roughly the radius, and the expanded bounds follow the widest octave rather
 than the mixture's RMS for the same reason.
 
+### The inverse-square model
+
+This is the look Deep Glow is known for, and it was built by measuring it. A
+Deep Glow render of white text was fitted as a sum of Gaussians, one per
+half-octave, with non-negative weights: the light it spreads is **0.3 to 0.4 of
+the source per octave, the same in every octave from about a pixel out to
+about 100 px, and gone by about 180 px**. Equal light per octave is exactly
+what a 1/r² glare is — the Classic ladder at Falloff 2.0 has that shape too —
+but three things set it apart, and each one is visible:
+
+1. **Nothing is normalised.** Every octave carries the same light however many
+   there are, so the total is several times the source's light and grows with
+   the log of the radius. Classic divides the same light between its octaves,
+   so its glow next to a thin stroke is a fraction of Deep Glow's.
+2. **The core is a fixed size.** The finest octave is about one pixel in the
+   composition whatever the radius. Classic's finest octave is a fixed fraction
+   of the radius, so at a large radius the bright line hugging the shape is
+   gone.
+3. **Radius is reach.** A larger radius adds octaves at the wide end and leaves
+   the core alone — the glow reaches further and gets brighter. In Classic the
+   whole kernel scales, and a larger glow is a dimmer one.
+
+The weights come from a density over log σ, in units of the radius sigma
+`s = σ / σ_R`:
+
+```
+ρ(s) = gain · s^(2−n) · exp(−s²/2)
+```
+
+`s^(2−n)` is the power law — flat at the default *n* = 2 — and the Gaussian
+factor is the cutoff: untouched below the radius, an eighth at twice it, gone
+by three times it. Falloff redistributes the light between the core and the
+halo but the total is always that of *n* = 2, so it changes the glow's shape
+and not its brightness. `gain` is `kInverseSquareOctaveGain`, 0.45 per octave,
+fitted so the default threshold of 0.5 lands on the reference.
+
+Each rung of the ladder carries the integral of ρ over the band of scales
+around it, from the geometric midpoint with the rung below to the one with the
+rung above. The first rung also takes everything down to the half-pixel core,
+and the last everything past the radius. Integrating instead of sampling is what
+makes the total independent of where the grid put the rungs, so it holds
+across resolutions and qualities. Measured, rendered white text against the
+reference, as the median 8 bpc code value at each distance from the letters:
+
+| Distance (px) | 1–3 | 3–6 | 6–10 | 10–20 | 20–40 | 40–80 | 80–150 | 150–200 |
+|---------------|-----|-----|------|-------|-------|-------|--------|---------|
+| Deep Glow | 181 | 151 | 127 | 104 | 73 | 43 | 21 | 9 |
+| Inverse Square, radius 400 | 181 | 159 | 139 | 111 | 78 | 49 | 26 | 11 |
+| Previous default (Classic, radius 40) | 56 | 40 | 28 | 15 | 4 | 1 | 0 | 0 |
+
+Below the cutoff the rendered profile of a point source follows the law it was
+asked for — fitted exponent 1.571, 2.037 and 3.008 for Falloff 1.5, 2.0 and 3.0.
+`TestInverseSquareFollowsThePowerLaw` holds it to ±0.12, and
+`TestRadiusExtendsTheReachNotTheCore` checks the third point above: going from
+radius 100 to 400 moves the glow 2 px from a bar by 18% and 150 px from it by a
+factor of 28.
+
+**The rungs sit still; the weights move.** Classic solves the per-level blur so
+a rung lands on the radius, which means the rungs slide as the radius animates.
+That is harmless when the whole kernel scales, but here it would move the core.
+The inverse-square ladder uses a fixed per-level blur of one level pixel, so the
+rungs are fixed sizes and only their weights follow the radius. A new rung only
+ever appears past twice the radius, where the density is an eighth of its
+plateau, so the radius can be animated without a step.
+
+**Two tiers, so the budget never touches the core.** The level-0 pixel budget
+has to hold the glow's whole reach, which is several times the radius. Fitting
+that into the budget by coarsening the pyramid step, the way Classic does,
+coarsens the core with it: when a radius animation pushed the step from 1 to 2,
+the finest rung went from 1.1 px to 2.3 px and the glow 1 px from the edge
+jumped by 21%. Instead the step is chosen from the layer's own size and the
+quality, never the radius, and the pyramid splits in two:
+
+```
+core tier   levels 0 … k−1   the layer plus what their blurs spill (a few px)
+halo tier   levels k … top   the whole reach, anchored to multiples of its pixel
+```
+
+`k` is the first level whose full span fits the budget, and it is zero — one
+tier, as in Classic — whenever the reach is small. `DownsampleHalfInto` feeds
+the first halo level from the last core level at an offset, reading zeros past
+the core tier's edge, and each tier collapses on its own. The composite
+reconstructs both and adds them: the core at the pyramid step, over the layer
+only, and the halo at `step · 2^k` everywhere. Where `k` changes nothing moves,
+because the extents change and the content does not. Sweeping the radius from
+180 to 260 in steps of 4, across a change of tier, the largest step anywhere
+within 16 px of a bar is 1.46%, all of it the light the larger radius adds;
+`TestInverseSquareDoesNotPop` fails on the old behaviour. The same split also
+keeps memory flat: a 1080p layer at radius 4000 builds a 12-level ladder whose
+halo starts four levels up.
+
+Everything the Classic model guarantees, the inverse-square one is tested for
+too — each of these runs for both models:
+
+| | Classic | Inverse Square |
+|-|---------|----------------|
+| Glow slides as the radius animates (`TestGlowDoesNotSlideWithRadius`) | 0.001 px | 0.001 px |
+| Size spread across Full / Half / Third / Quarter | 0.66% | 0.66% |
+| Brightness spread across Full / Half / Quarter | 0.12% | 0.001% |
+| Centroid drift over sub-pixel motion | < 0.0001 px | < 0.0001 px |
+| A requested window against the full render | < 0.1% | < 0.1%, two tiers |
+
 ### Energy
 
-Every filter in the chain is normalised, so the glow conserves the light it
-extracts: widening the radius spreads the same energy over more area and the
-glow dims, exactly as a real light source would. Exposure and Intensity are the
-controls for putting that brightness back.
+In the Classic model every filter in the chain is normalised, so the glow
+conserves the light it extracts: widening the radius spreads the same energy
+over more area and the glow dims, exactly as a real light source would.
+Exposure and Intensity are the controls for putting that brightness back.
+
+Inverse Square does not conserve it, deliberately: a larger radius adds the
+light a wider glare would catch. The total grows with the log of the radius —
+about 2.1× the extracted light at radius 40, 3.6× at 400 and 5.1× at 4000.
 
 ### Reconstruction
 
@@ -300,8 +411,23 @@ instead of `taps²`.
 The glow is added in linear light and re-encoded for the output depth. Where
 the glow is exactly zero the source pixel is copied through bit-exactly, so an
 untouched area of the frame is never altered by an encode/decode round trip.
-Alpha grows as `a + glow_a·(1 − a)`, clamped to 1, so the glow is visible where
-the layer was transparent without breaking premultiplication.
+
+**The glow is written as light over black.** After Effects blends 8 and 16 bpc
+layers in their encoded space, so what a pixel shows over black is its
+premultiplied value as it stands. The glow used to be written the usual way for
+a coloured pixel — its colour unpremultiplied by the glow's coverage, encoded,
+and premultiplied again. Over black that shows `Encode(light / a) · a`, and the
+concave curve makes that darker the less coverage there is: a glow spilling
+into a transparent layer showed about a third of its light at the edge and a
+tenth of it in the tail, which is why the old glow on text looked thin however
+it was set. In an encoded working space the result is now built as the source's
+own light over black plus the glow, encoded, with alpha the largest encoded
+channel — the least coverage that can carry that colour, which over anything
+brighter than black composites like Screen. An opaque pixel comes out exactly
+as before. In a linear working space premultiplied values already are light
+over black, and alpha grows as `a + glow_a·(1 − a)`, clamped to 1.
+`TestGlowIsLightOverBlack` compares an 8 bpc render with the float light it
+should show: within 2.3% for both models.
 
 Where the lit result leaves the output's range, **Highlight Rolloff** decides
 what happens. Clipping each channel independently reaches the ceiling at a
@@ -311,6 +437,20 @@ default rolls the whole triple off together through a smooth shoulder above
 0.75, which leaves the ratios between channels — the hue — untouched: the same
 pixel comes out (1, 0.078, 0.078), the source's colour at full brightness. Float
 output keeps its HDR values and is never touched.
+
+**Burn to White** does on purpose, and smoothly, what clipping does by
+accident. The shoulder that preserves the hue says how much light the brightest
+channel has to lose to fit, and that much overexposure pulls the other channels
+up towards it: `white = 1 − exp(−(m − shoulder(m)))`. Below the knee nothing
+changes and the join is C¹, so no contour is drawn where burning starts. A
+saturated cyan driven to three times its level comes out (0.99, 1, 1) at its
+core while its glow, which the output can show, keeps its colour. Float output
+is burned too but keeps the brightest channel's HDR value.
+
+All three work on light over black, not on the unpremultiplied colour: the
+faint tail of a glow over a transparent layer has the source's full colour at
+low coverage, and reading that as a bright colour dimmed it by a tenth under
+Preserve Hue though it was nowhere near the ceiling.
 
 For 8 and 16 bpc output the quantisation is stochastic: a sample lands on one
 of the two code values it sits between, with probability given by where it
@@ -381,7 +521,7 @@ Two properties matter more than the noise shaping:
 
 ## Performance
 
-4K (3840×2160), 4 cores, 8 bpc, milliseconds — best of five renders:
+Classic, 4K (3840×2160), 4 cores, 8 bpc, milliseconds — best of five renders:
 
 | Radius | Draft | Normal | High | Best |
 |--------|-------|--------|------|------|
@@ -398,6 +538,23 @@ not large ones: `base_scale` shrinks with the radius, so level 0 is at or near
 full resolution and the level-0 blur dominates. The level-0 pixel budget is what
 stops that from also costing hundreds of megabytes (4 MP at Normal keeps a 4K
 frame near 80 MB).
+
+Inverse Square, measured the same way on text-like content, with the output
+the size of the layer:
+
+| Radius | Draft | Normal | High | Best |
+|--------|-------|--------|------|------|
+| 20 | 113 | 111 | 254 | 260 |
+| 100 | 170 | 173 | 301 | 333 |
+| 400 | 202 | 210 | 352 | 543 |
+| 1000 | 197 | 250 | 356 | 500 |
+
+Classic on that content and machine measured 122 / 194 / 285 / 192 ms at
+Normal for the same radii, so the two cost about the same: the core tier is at
+most the layer, and the halo tier starts as far up the ladder as the budget
+needs. A 4K layer is over the Normal budget on its own, so its core is built at
+a step of 2 — a 2.3 px finest octave, which at 4K is the same size in the frame
+as 1.1 px at 1080p.
 
 What mattered, in order: restructuring the blur so the tap loops vectorise
 (taps in the outer loop, pixels in the inner loop), giving level 0 a pixel
