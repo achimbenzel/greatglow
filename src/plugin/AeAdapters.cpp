@@ -117,6 +117,9 @@ HostImage MakeHostImage(PF_EffectWorld* world, PixelDepth depth) {
     image.width = world->width;
     image.height = world->height;
     image.depth = depth;
+    // After Effects' worlds are straight at every depth; the pipeline works
+    // premultiplied and converts at its edges.
+    image.alpha = AlphaMode::kStraight;
     return image;
 }
 

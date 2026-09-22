@@ -48,6 +48,34 @@ inline PixelF LinearizePremultiplied(const PixelF& p, const TransferFunction& tr
                   transfer.Decode(p.b * inv) * p.a};
 }
 
+// A host pixel as premultiplied linear light, whichever convention it is
+// stored in. A straight pixel's colour is the pixel's own colour, so it is
+// decoded as it stands and then weighted by its coverage. Read as if it were
+// premultiplied, a straight anti-aliased edge divided its full colour by its
+// coverage a second time: a pixel a tenth covered glowed ten times too bright,
+// which put a ragged, flickering fringe of light along every edge and made the
+// glow stronger at reduced resolution, where more of a layer is edge.
+inline PixelF LinearPremultiplied(const PixelF& p, const TransferFunction& transfer, AlphaMode mode) {
+    if (mode == AlphaMode::kPremultiplied) return LinearizePremultiplied(p, transfer);
+    if (p.a <= kTransparent) return PixelF{p.a, 0.0f, 0.0f, 0.0f};
+    return PixelF{p.a, transfer.Decode(p.r) * p.a, transfer.Decode(p.g) * p.a, transfer.Decode(p.b) * p.a};
+}
+
+// A host pixel premultiplied in its own encoding: what it shows over black.
+inline PixelF Premultiplied(const PixelF& p, AlphaMode mode) {
+    if (mode == AlphaMode::kPremultiplied) return p;
+    if (p.a <= kTransparent) return PixelF{p.a, 0.0f, 0.0f, 0.0f};
+    return PixelF{p.a, p.r * p.a, p.g * p.a, p.b * p.a};
+}
+
+// The composite's premultiplied result in the destination's convention.
+inline PixelF ToHostAlpha(const PixelF& p, AlphaMode mode) {
+    if (mode == AlphaMode::kPremultiplied) return p;
+    if (!(p.a > kTransparent)) return PixelF{0.0f, 0.0f, 0.0f, 0.0f};
+    const float inv = 1.0f / p.a;
+    return PixelF{p.a, p.r * inv, p.g * inv, p.b * inv};
+}
+
 // Soft-knee highlight isolation. The brightest channel drives the threshold so
 // saturated colours glow as readily as white, and above the knee the HDR value
 // passes through untouched.
@@ -128,7 +156,8 @@ void ExtractSourceRow(const HostImage& source, int src_y, const Threshold& thres
                       const TransferFunction& transfer, PixelF* out) {
     const void* row = source.ConstRow(src_y);
     for (int x = 0; x < source.width; ++x) {
-        out[x] = ExtractHighlight(LinearizePremultiplied(ReadRowPixel<kDepth>(row, x), transfer), threshold);
+        out[x] = ExtractHighlight(LinearPremultiplied(ReadRowPixel<kDepth>(row, x), transfer, source.alpha),
+                                  threshold);
     }
 }
 
@@ -531,9 +560,8 @@ inline void ShapeHighlights(float& r, float& g, float& b, const CompositeContext
 // brightness of the source's colour at low coverage, and the shoulder dimmed
 // it by a tenth though it was nowhere near the ceiling. Where the output is
 // bounded, alpha is raised to cover the colour so the pixel stays a valid
-// premultiplied one.
+// premultiplied one - and, stored straight, a colour that fits.
 inline PixelF ShapePremultiplied(const PixelF& lit, const CompositeContext& ctx) {
-    if (!ctx.rolloff && !ctx.burn) return lit;
     float r = lit.r;
     float g = lit.g;
     float b = lit.b;
@@ -615,6 +643,9 @@ void CompositeRows(const HostImage& source, int offset_x, int offset_y, const Co
                    const HostImage& dest, int y_begin, int y_end) {
     const TransferFunction& transfer = *ctx.transfer;
     const bool has_source = !source.Empty() && ctx.mode != CompositeMode::kGlowOnly;
+    // Copying a pixel through untouched is only exact between buffers that
+    // store alpha the same way.
+    const bool same_convention = source.alpha == dest.alpha;
 
     GlowSampler core(ctx.core, ctx, dest.width);
     GlowSampler halo(ctx.halo, ctx, dest.width);
@@ -639,20 +670,22 @@ void CompositeRows(const HostImage& source, int offset_x, int offset_y, const Co
 
             if constexpr (kSrcDepth == kDstDepth) {
                 // Nothing to add here: keep the original pixel bit-exact.
-                if (src_valid && ctx.mode != CompositeMode::kGlowOnly && IsZero(glow_pixel)) {
+                if (src_valid && same_convention && ctx.mode != CompositeMode::kGlowOnly && IsZero(glow_pixel)) {
                     static_cast<typename HostPixel<kDstDepth>::Type*>(dst_row)[x] =
                         static_cast<const typename HostPixel<kSrcDepth>::Type*>(src_row)[src_x];
                     continue;
                 }
             }
 
-            const PixelF raw = src_valid ? ReadRowPixel<kSrcDepth>(src_row, src_x) : PixelF{0.0f, 0.0f, 0.0f, 0.0f};
+            const PixelF raw = src_valid ? Premultiplied(ReadRowPixel<kSrcDepth>(src_row, src_x), source.alpha)
+                                         : PixelF{0.0f, 0.0f, 0.0f, 0.0f};
             PixelF encoded;
             if (transfer.IsIdentity()) {
                 encoded = ShapePremultiplied(CombinePixel(raw, glow_pixel, ctx), ctx);
             } else {
                 encoded = ComposeEncoded(raw, glow_pixel, ctx);
             }
+            encoded = ToHostAlpha(encoded, dest.alpha);
 
             if constexpr (kDstDepth == PixelDepth::kFloat32) {
                 static_cast<PixelF*>(dst_row)[x] = encoded;
@@ -788,7 +821,9 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
     if (render.dest.Empty()) return GlowResult::kInvalidArguments;
 
     const float gain = std::max(0.0f, settings.intensity) * std::exp2(settings.exposure);
-    if (!(gain > 0.0f)) {
+    // The fast path copies bytes, which is only right when both buffers store
+    // alpha the same way; otherwise the composite below converts them.
+    if (!(gain > 0.0f) && render.source.alpha == render.dest.alpha) {
         // Nothing to add: skip the pyramid entirely.
         if (settings.composite == CompositeMode::kGlowOnly) {
             GlowRender empty = render;

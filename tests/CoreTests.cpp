@@ -31,6 +31,7 @@ void CheckNear(float actual, float expected, float tolerance, const std::string&
     }
 }
 
+using abglow::AlphaMode;
 using abglow::CompositeMode;
 using abglow::GlowModel;
 using abglow::GlowRender;
@@ -361,7 +362,7 @@ void TestSizeIsResolutionIndependent(GlowModel model) {
 // pixels. Extraction has to stay linear in coverage or the same glow comes out
 // dimmer at Half and Quarter - thresholding the premultiplied value made it 8%
 // dimmer at Quarter on text.
-void TestBrightnessIsResolutionIndependent(GlowModel model) {
+void TestBrightnessIsResolutionIndependent(GlowModel model, AlphaMode alpha) {
     MallocAllocator allocator;
     ThreadPoolRunner runner(4);
 
@@ -374,7 +375,7 @@ void TestBrightnessIsResolutionIndependent(GlowModel model) {
     for (int den : {1, 2, 4}) {
         const int width = comp_w / den;
         const int height = comp_h / den;
-        TestImage source(width, height, PixelDepth::kFloat32);
+        TestImage source(width, height, PixelDepth::kFloat32, alpha);
         TestImage dest(width, height, PixelDepth::kFloat32);
 
         // A stroke whose edges land off the pixel grid at every resolution, so
@@ -386,9 +387,12 @@ void TestBrightnessIsResolutionIndependent(GlowModel model) {
                 const float x0 = static_cast<float>(x * den);
                 const float x1 = x0 + static_cast<float>(den);
                 const float covered = std::max(0.0f, std::min(x1, right) - std::max(x0, left));
-                const float alpha = covered / static_cast<float>(den);
-                if (alpha <= 0.0f) continue;
-                source.SetPixel(x, y, PixelF{alpha, 0.0f, alpha, alpha});
+                const float coverage = covered / static_cast<float>(den);
+                if (coverage <= 0.0f) continue;
+                // After Effects stores the colour of an edge pixel as it is and
+                // its coverage in alpha; premultiplied, the colour is scaled.
+                const float colour = alpha == AlphaMode::kStraight ? 1.0f : coverage;
+                source.SetPixel(x, y, PixelF{coverage, 0.0f, colour, colour});
             }
         }
 
@@ -417,7 +421,8 @@ void TestBrightnessIsResolutionIndependent(GlowModel model) {
         dimmest = std::min(dimmest, energy);
     }
     Check(brightest <= dimmest * 1.02,
-          std::string("glow is the same brightness at every render resolution") + ModelName(model));
+          std::string("glow is the same brightness at every render resolution") + ModelName(model) +
+              (alpha == AlphaMode::kStraight ? " from straight pixels" : " from premultiplied pixels"));
 }
 
 // Dither must not invent light. With expanded bounds most of the output buffer
@@ -1267,8 +1272,8 @@ void TestTransparentInput() {
     MallocAllocator allocator;
     ThreadPoolRunner runner(2);
 
-    TestImage source(48, 48, PixelDepth::kFloat32);
-    TestImage dest(48, 48, PixelDepth::kFloat32);
+    TestImage source(48, 48, PixelDepth::kFloat32, AlphaMode::kStraight);
+    TestImage dest(48, 48, PixelDepth::kFloat32, AlphaMode::kStraight);
     // Transparent but with leftover RGB, as AE can deliver with
     // preserve_rgb_of_zero_alpha.
     for (int y = 0; y < 48; ++y) {
@@ -1786,6 +1791,267 @@ void TestBurnToWhite() {
     Check(core.r > 0.8f * core.b, "float output burns too");
 }
 
+// After Effects hands effects straight pixels: an anti-aliased edge keeps its
+// full colour and says how much of the pixel it covers in alpha. Read as if it
+// were premultiplied, that colour was divided by the coverage again - a pixel a
+// tenth covered emitted as if it were ten times as bright - and the output was
+// written premultiplied into a buffer the host reads as straight. The edges
+// came out hard and stair-stepped with the glow on, the glow along them was a
+// ragged fringe that crawled as the layer moved, and it was twice as strong at
+// Third resolution as at Full. The straight path has to give exactly what the
+// premultiplied one does, pixel for pixel, as the host will show it.
+void TestStraightAlphaMatchesPremultiplied() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 360;
+    const int height = 240;
+    TestImage straight_source(width, height, PixelDepth::kBits8, AlphaMode::kStraight);
+    TestImage premultiplied_source(width, height, PixelDepth::kBits8, AlphaMode::kPremultiplied);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            // An anti-aliased disc, a translucent block and a gradient edge.
+            const float disc = std::clamp(40.5f - static_cast<float>(std::hypot(x - 120.3, y - 118.7)), 0.0f, 1.0f);
+            PixelF colour{disc, 1.0f, 0.55f, 0.2f};
+            if (x >= 220 && x < 300 && y >= 60 && y < 180) {
+                colour = PixelF{0.4f + 0.004f * static_cast<float>(x - 220), 0.3f, 0.8f, 1.0f};
+            }
+            straight_source.SetPixel(x, y, colour);
+            premultiplied_source.SetPixel(
+                x, y, PixelF{colour.a, colour.r * colour.a, colour.g * colour.a, colour.b * colour.a});
+        }
+    }
+
+    for (GlowModel model : {GlowModel::kClassic, GlowModel::kInverseSquare}) {
+        for (CompositeMode mode : {CompositeMode::kAdd, CompositeMode::kGlowOnly}) {
+            GlowSettings settings = DefaultSettings();
+            settings.model = model;
+            settings.working_space = WorkingSpace::kSrgb;
+            settings.threshold = 0.2f;
+            settings.radius_x = settings.radius_y = 90.0f;
+            settings.composite = mode;
+            settings.dither = false;
+
+            auto render_with = [&](TestImage& source, AlphaMode alpha) {
+                TestImage dest(width, height, PixelDepth::kBits8, alpha);
+                GlowRender render;
+                render.source = source.View();
+                render.dest = dest.View();
+                Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
+                      "alpha convention render succeeds");
+                return dest;
+            };
+            const TestImage straight = render_with(straight_source, AlphaMode::kStraight);
+            const TestImage premultiplied = render_with(premultiplied_source, AlphaMode::kPremultiplied);
+
+            float worst = 0.0f;
+            for (int y = 0; y < height; ++y) {
+                for (int x = 0; x < width; ++x) {
+                    const PixelF a = straight.GetPixel(x, y);
+                    const PixelF b = premultiplied.GetPixel(x, y);
+                    worst = std::max(worst, std::fabs(a.a - b.a));
+                    worst = std::max(worst, std::fabs(a.r * a.a - b.r));
+                    worst = std::max(worst, std::fabs(a.g * a.a - b.g));
+                    worst = std::max(worst, std::fabs(a.b * a.a - b.b));
+                }
+            }
+            Check(worst <= 2.5f / 255.0f,
+                  std::string("straight pixels composite exactly as premultiplied ones do") + ModelName(model));
+        }
+    }
+}
+
+// With the glow on, an anti-aliased edge has to stay anti-aliased: the
+// coverage of a half-covered pixel is still a half, not raised to cover its
+// full colour, which is what made text look pixelated.
+void TestStraightEdgesStayAntiAliased() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 300;
+    const int height = 300;
+    TestImage source(width, height, PixelDepth::kBits8, AlphaMode::kStraight);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const float coverage =
+                std::clamp(60.5f - static_cast<float>(std::hypot(x - 150.3, y - 149.6)), 0.0f, 1.0f);
+            source.SetPixel(x, y, PixelF{coverage, 0.39f, 0.77f, 0.98f});
+        }
+    }
+
+    GlowSettings settings = DefaultSettings();
+    settings.model = GlowModel::kInverseSquare;
+    settings.working_space = WorkingSpace::kSrgb;
+    settings.radius_x = settings.radius_y = 150.0f;
+    settings.intensity = 0.005f;
+    settings.dither = false;
+
+    TestImage dest(width, height, PixelDepth::kBits8, AlphaMode::kStraight);
+    GlowRender render;
+    render.source = source.View();
+    render.dest = dest.View();
+    Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk, "edge render succeeds");
+
+    int edges = 0;
+    float worst = 0.0f;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const float coverage = source.GetPixel(x, y).a;
+            if (coverage < 0.15f || coverage > 0.85f) continue;
+            ++edges;
+            worst = std::max(worst, dest.GetPixel(x, y).a - coverage);
+        }
+    }
+    Check(edges > 100, "the disc has an anti-aliased edge to check");
+    // The faint glow adds a little coverage; reading straight as premultiplied
+    // raised every one of these to the brightness of the full colour, 0.98.
+    Check(worst < 0.05f, "a faint glow leaves the edge's coverage where it was");
+}
+
+// A moving shape must not make its glow flicker. The light a layer emits is
+// linear in its coverage, so the total cannot change as the shape slides
+// across the pixel grid, and the glow a frame later has to be the glow of the
+// frame before, moved. Reading straight pixels as premultiplied swung the
+// total by a fifth between quarter-pixel steps.
+void TestGlowDoesNotFlicker() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 500;
+    const int height = 400;
+    const double step = 0.125;
+    for (GlowModel model : {GlowModel::kClassic, GlowModel::kInverseSquare}) {
+        GlowSettings settings = DefaultSettings();
+        settings.model = model;
+        settings.falloff = 2.0f;
+        settings.threshold = 0.5f;
+        settings.radius_x = settings.radius_y = 200.0f;
+        settings.composite = CompositeMode::kGlowOnly;
+
+        std::vector<TestImage> frames;
+        std::vector<double> totals;
+        for (int f = 0; f <= 8; ++f) {
+            const double shift = f * step;
+            TestImage source(width, height, PixelDepth::kFloat32, AlphaMode::kStraight);
+            for (int y = 0; y < height; ++y) {
+                for (int x = 0; x < width; ++x) {
+                    // A thin ring, its coverage integrated over each pixel.
+                    double covered = 0.0;
+                    for (int sy = 0; sy < 4; ++sy) {
+                        for (int sx = 0; sx < 4; ++sx) {
+                            const double px = x + (sx + 0.5) / 4.0 - shift;
+                            const double py = y + (sy + 0.5) / 4.0;
+                            const double d = std::fabs(std::hypot(px - 250.0, py - 200.0) - 90.0);
+                            covered += d < 2.5 ? 1.0 : 0.0;
+                        }
+                    }
+                    const float coverage = static_cast<float>(covered / 16.0);
+                    if (coverage > 0.0f) source.SetPixel(x, y, PixelF{coverage, 1.0f, 0.75f, 1.0f});
+                }
+            }
+            frames.emplace_back(width, height, PixelDepth::kFloat32);
+            GlowRender render;
+            render.source = source.View();
+            render.dest = frames.back().View();
+            Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
+                  "flicker render succeeds");
+            double total = 0.0;
+            for (int y = 0; y < height; ++y) {
+                for (int x = 0; x < width; ++x) total += frames.back().GetPixel(x, y).g;
+            }
+            totals.push_back(total);
+        }
+
+        const double lowest = *std::min_element(totals.begin(), totals.end());
+        const double highest = *std::max_element(totals.begin(), totals.end());
+        Check(highest <= lowest * 1.001,
+              std::string("the glow's total light holds still as the shape moves") + ModelName(model));
+
+        // Away from the ring itself, each frame against the one before moved by
+        // the step. Measured 0.2%; reading straight as premultiplied, 55%.
+        float worst = 0.0f;
+        for (std::size_t f = 1; f < frames.size(); ++f) {
+            std::vector<float> residuals;
+            for (int y = 60; y < height - 60; y += 3) {
+                for (int x = 60; x < width - 60; x += 3) {
+                    const double ring = std::fabs(std::hypot(x - 250.0, y - 200.0) - 90.0);
+                    if (ring < 8.0) continue;
+                    const float before = frames[f - 1].GetPixel(x, y).g;
+                    const float left = frames[f - 1].GetPixel(x - 1, y).g;
+                    const float predicted = static_cast<float>((1.0 - step) * before + step * left);
+                    const float now = frames[f].GetPixel(x, y).g;
+                    residuals.push_back(std::fabs(now - predicted) / (predicted + 1e-3f));
+                }
+            }
+            std::sort(residuals.begin(), residuals.end());
+            worst = std::max(worst, residuals[residuals.size() * 99 / 100]);
+        }
+        Check(worst < 0.01f, std::string("the glow moves with the shape instead of flickering") + ModelName(model));
+    }
+}
+
+// Every rung is upsampled into the one below it before the final
+// reconstruction. Bilinear left a kink at each coarse sample, and in a strong,
+// wide glow those kinks line up into faint concentric rings; the collapse is a
+// quadratic B-spline now. Checked on the curvature of the log profile out of a
+// small disc: a power law has a smooth n / r^2, and kinks are spikes on it.
+void TestNoRingsInTheHalo() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int size = 1200;
+    TestImage source(size, size, PixelDepth::kFloat32);
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            const float coverage =
+                std::clamp(8.5f - static_cast<float>(std::hypot(x - 600.3, y - 600.6)), 0.0f, 1.0f);
+            if (coverage > 0.0f) source.SetPixel(x, y, PixelF{coverage, 4.0f * coverage, 4.0f * coverage, 4.0f * coverage});
+        }
+    }
+    for (GlowModel model : {GlowModel::kClassic, GlowModel::kInverseSquare}) {
+        GlowSettings settings = DefaultSettings();
+        settings.model = model;
+        settings.falloff = 2.0f;
+        settings.threshold = 0.0f;
+        settings.radius_x = settings.radius_y = 1200.0f;
+        settings.composite = CompositeMode::kGlowOnly;
+        TestImage dest(size, size, PixelDepth::kFloat32);
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk, "ring render succeeds");
+
+        double spikes = 0.0;
+        int angles = 0;
+        for (double angle = 0.0; angle <= 1.5708; angle += 0.2618) {
+            std::vector<double> curvature;
+            auto sample = [&](double r) {
+                const double x = 600.3 + r * std::cos(angle);
+                const double y = 600.6 + r * std::sin(angle);
+                const int x0 = static_cast<int>(std::floor(x));
+                const int y0 = static_cast<int>(std::floor(y));
+                const double fx = x - x0;
+                const double fy = y - y0;
+                return dest.GetPixel(x0, y0).g * (1 - fx) * (1 - fy) + dest.GetPixel(x0 + 1, y0).g * fx * (1 - fy) +
+                       dest.GetPixel(x0, y0 + 1).g * (1 - fx) * fy + dest.GetPixel(x0 + 1, y0 + 1).g * fx * fy;
+            };
+            for (double r = 21.0; r < 560.0; r += 1.0) {
+                const double a = std::log(sample(r - 1.0));
+                const double b = std::log(sample(r));
+                const double c = std::log(sample(r + 1.0));
+                curvature.push_back(std::fabs(a - 2.0 * b + c) * r * r);
+            }
+            std::vector<double> sorted = curvature;
+            std::sort(sorted.begin(), sorted.end());
+            spikes += sorted[sorted.size() * 99 / 100] / sorted[sorted.size() / 2];
+            ++angles;
+        }
+        // Measured 2.1 for Inverse Square; bilinear with the old per-level
+        // blur scored 4.7.
+        Check(spikes / angles < 3.0, std::string("the halo has no rings") + ModelName(model));
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -1798,7 +2064,8 @@ int main() {
     for (GlowModel model : {GlowModel::kClassic, GlowModel::kInverseSquare}) {
         TestGlowDoesNotSlideWithRadius(model);
         TestSizeIsResolutionIndependent(model);
-        TestBrightnessIsResolutionIndependent(model);
+        TestBrightnessIsResolutionIndependent(model, AlphaMode::kPremultiplied);
+        TestBrightnessIsResolutionIndependent(model, AlphaMode::kStraight);
         TestRegionOfInterestMatchesFullFrame(model);
         TestGlowTracksSubPixelMotion(model);
     }
@@ -1829,6 +2096,10 @@ int main() {
     TestInverseSquareDoesNotPop();
     TestGlowIsLightOverBlack();
     TestBurnToWhite();
+    TestStraightAlphaMatchesPremultiplied();
+    TestStraightEdgesStayAntiAliased();
+    TestGlowDoesNotFlicker();
+    TestNoRingsInTheHalo();
 
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

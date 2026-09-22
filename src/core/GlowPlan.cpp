@@ -79,8 +79,11 @@ long long PixelBudget(Quality quality) {
 // not solved onto the radius the way the classic ladder's are: they sit at
 // fixed sizes, and the radius moves the weights across them instead. Solving
 // them onto the radius would move the finest rung - the core - every time the
-// radius crossed an octave, which pops.
-constexpr float kInverseSquareLevelSigma = 1.0f;
+// radius crossed an octave, which pops. It has to be wide enough that halving
+// the level does not alias: at 1.0 a thin moving edge rippled by 1.3% along
+// its length and the radial profile carried kinks that read as rings; at 1.8
+// the ripple is 0.55%, and the finest rung is still under 2 px.
+constexpr float kInverseSquareLevelSigma = 1.8f;
 
 // Where the inverse-square ladder stops, and where the bounds stop, in units of
 // the radius sigma. The density is down to an eighth of its plateau at twice

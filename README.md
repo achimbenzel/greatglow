@@ -88,7 +88,7 @@ Restart After Effects; the effect appears under **Effect ▸ AB Tools ▸ Profou
 Pick **one** of those two folders. After Effects scans both, so a copy left in
 the other one can be the copy it loads, and replacing the file you were
 thinking of changes nothing. The effect's parameters end with a group named
-after the build it came from (`v1.2.0 (abc1234)`), so the loaded build can be
+after the build it came from (`v1.2.1 (abc1234)`), so the loaded build can be
 read straight off the panel. To find every copy on the machine:
 
 ```powershell
@@ -150,8 +150,8 @@ build from v1.0.0 onward opens correctly in any later build. The effect's match
 name is `ABBZ ProfoundGlow`; the earlier `AB Glow` is a separate effect, so old
 projects are untouched and both can be installed side by side.
 
-Opening correctly is not the same as looking the same, though. Two things in
-v1.2.0 change the look of a project saved by an earlier build:
+Opening correctly is not the same as looking the same, though. These change
+the look of a project saved by an earlier build:
 
 * **Glow Model** is new, so an older project gets its default, Inverse Square.
   Set it to Classic to get the earlier look back; the project's own Radius and
@@ -160,6 +160,12 @@ v1.2.0 change the look of a project saved by an earlier build:
   written as light over black: a glow spilling into a transparent layer used to
   show a third of its light at the edge and a tenth of it in the tail. Opaque
   pixels, and everything in a linear working space, come out as before.
+* **Anti-aliased edges glow as they should (v1.2.1).** After Effects stores
+  pixels straight; every earlier build read and wrote them as premultiplied.
+  Edges emitted far too much light — a ragged fringe that crawled as a layer
+  moved, blobs on small text, a glow twice as strong at Third resolution — and
+  came out stair-stepped with the glow on. Anything with soft or anti-aliased
+  edges looks different, and right, now.
 
 ### Known limitation: anisotropy
 

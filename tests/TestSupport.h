@@ -64,9 +64,16 @@ class TestImage {
 public:
     TestImage() = default;
 
-    TestImage(int width, int height, abglow::PixelDepth depth) { Resize(width, height, depth); }
+    // Premultiplied unless asked otherwise, so a test can read a glow's light
+    // straight off the pixel; the tests of the host's own convention pass
+    // AlphaMode::kStraight.
+    TestImage(int width, int height, abglow::PixelDepth depth,
+              abglow::AlphaMode alpha = abglow::AlphaMode::kPremultiplied) {
+        Resize(width, height, depth, alpha);
+    }
 
-    void Resize(int width, int height, abglow::PixelDepth depth) {
+    void Resize(int width, int height, abglow::PixelDepth depth,
+                abglow::AlphaMode alpha = abglow::AlphaMode::kPremultiplied) {
         const int bytes_per_pixel = depth == abglow::PixelDepth::kBits8
                                         ? 4
                                         : (depth == abglow::PixelDepth::kBits16 ? 8 : 16);
@@ -77,6 +84,7 @@ public:
         view_.width = width;
         view_.height = height;
         view_.depth = depth;
+        view_.alpha = alpha;
     }
 
     abglow::HostImage& View() { return view_; }

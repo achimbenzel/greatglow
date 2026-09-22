@@ -8,6 +8,13 @@ namespace abglow {
 
 enum class PixelDepth { kBits8, kBits16, kFloat32 };
 
+// How a host image stores colour against alpha. After Effects hands effects
+// straight (unpremultiplied) pixels at every depth: the SDK's own sampling
+// macros ask for PF_MF_Alpha_STRAIGHT, and preserve_rgb_of_zero_alpha only
+// means anything if colour survives under zero alpha. The glow is computed
+// premultiplied, so the pipeline converts on the way in and on the way out.
+enum class AlphaMode { kStraight, kPremultiplied };
+
 // View of a host image buffer. `rowbytes` is a byte stride so AE worlds can be
 // addressed without copying. Channel order is ARGB, matching PF_EffectWorld.
 struct HostImage {
@@ -16,6 +23,7 @@ struct HostImage {
     int width = 0;
     int height = 0;
     PixelDepth depth = PixelDepth::kBits8;
+    AlphaMode alpha = AlphaMode::kStraight;
 
     bool Empty() const { return data == nullptr || width <= 0 || height <= 0; }
 

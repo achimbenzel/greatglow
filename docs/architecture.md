@@ -25,11 +25,46 @@ without the host.
 
 ## The glow
 
+### Straight alpha
+
+After Effects hands an effect **straight** pixels at every depth: an
+anti-aliased edge keeps its full colour, and alpha says how much of the pixel
+it covers. The SDK's own sampling macros ask for `PF_MF_Alpha_STRAIGHT`, and
+`preserve_rgb_of_zero_alpha` only means anything if colour survives under zero
+alpha. The glow is computed premultiplied, so `HostImage` carries an
+`AlphaMode`, the plug-in marks After Effects' worlds `kStraight`, and the
+pipeline converts on the way in (colour decoded as it stands, then weighted by
+coverage) and on the way out.
+
+Until v1.2.1 every pixel was read and written as if it were premultiplied,
+and the mock host was written from the same assumption, so nothing caught it.
+In After Effects that meant:
+
+* **Edges emitted far too much light.** The colour was divided by the coverage
+  a second time, so a pixel a tenth covered glowed as if it were ten times as
+  bright. Every anti-aliased edge grew a ragged fringe of light, dense edges
+  such as small text turned into blobs, and the fringe changed with the
+  coverage, so it crawled whenever the layer moved: between quarter-pixel
+  steps of a moving ring the glow changed by up to 55% and its total by 21%.
+* **The glow was stronger at reduced resolution**, where more of a layer is
+  edge: 1.91× at Third against Full on text. Now 1.005×.
+* **Edges went hard with the glow on.** The composite read the edge's full
+  colour as light over black, which needed full coverage to show, so every
+  anti-aliased edge came out opaque and stair-stepped.
+
+`TestStraightAlphaMatchesPremultiplied` holds the straight path to the
+premultiplied one within 2.5/255 at every pixel, as the host will show it;
+`TestStraightEdgesStayAntiAliased`, `TestGlowDoesNotFlicker` and the
+straight-pixel run of `TestBrightnessIsResolutionIndependent` fail on the old
+behaviour, and the mock host checks an anti-aliasing ramp through the built
+plug-in. The core's own tests default to premultiplied images so that a glow's
+light can be read straight off a pixel.
+
 ### Highlight extraction
 
-Pixels are read in whatever depth the host is rendering, converted to linear
-light and un-premultiplied only where alpha is partial. The brightest channel
-drives a soft-knee threshold:
+Pixels are read in whatever depth the host is rendering, converted to
+premultiplied linear light, and un-premultiplied again only to judge a pixel's
+own brightness. The brightest channel drives a soft-knee threshold:
 
 ```
 above = level - threshold
@@ -42,8 +77,8 @@ readily as a white one, which is what people expect from a glow. Above the knee
 the gain approaches 1, so an HDR highlight of 50.0 keeps almost all of its
 energy instead of being clipped to white.
 
-`level` is the pixel's own brightness — the premultiplied value divided by
-alpha — not its brightness times its coverage. A half-covered pixel on the edge
+`level` is the pixel's own brightness — its straight colour — not its
+brightness times its coverage. A half-covered pixel on the edge
 of a bright glyph is bright; it just covers less area, and it should emit half
 the light rather than fail the threshold for looking dim. That makes the
 extracted light exactly linear in coverage, which is what the resolution
@@ -314,11 +349,11 @@ reference, as the median 8 bpc code value at each distance from the letters:
 | Distance (px) | 1–3 | 3–6 | 6–10 | 10–20 | 20–40 | 40–80 | 80–150 | 150–200 |
 |---------------|-----|-----|------|-------|-------|-------|--------|---------|
 | Deep Glow | 181 | 151 | 127 | 104 | 73 | 43 | 21 | 9 |
-| Inverse Square, radius 400 | 181 | 159 | 139 | 111 | 78 | 49 | 26 | 11 |
+| Inverse Square, radius 400 | 180 | 157 | 137 | 110 | 77 | 49 | 26 | 11 |
 | Previous default (Classic, radius 40) | 56 | 40 | 28 | 15 | 4 | 1 | 0 | 0 |
 
 Below the cutoff the rendered profile of a point source follows the law it was
-asked for — fitted exponent 1.571, 2.037 and 3.008 for Falloff 1.5, 2.0 and 3.0.
+asked for — fitted exponent 1.595, 2.057 and 3.028 for Falloff 1.5, 2.0 and 3.0.
 `TestInverseSquareFollowsThePowerLaw` holds it to ±0.12, and
 `TestRadiusExtendsTheReachNotTheCore` checks the third point above: going from
 radius 100 to 400 moves the glow 2 px from a bar by 18% and 150 px from it by a
@@ -327,10 +362,17 @@ factor of 28.
 **The rungs sit still; the weights move.** Classic solves the per-level blur so
 a rung lands on the radius, which means the rungs slide as the radius animates.
 That is harmless when the whole kernel scales, but here it would move the core.
-The inverse-square ladder uses a fixed per-level blur of one level pixel, so the
-rungs are fixed sizes and only their weights follow the radius. A new rung only
-ever appears past twice the radius, where the density is an eighth of its
-plateau, so the radius can be animated without a step.
+The inverse-square ladder uses a fixed per-level blur of 1.8 level pixels, so
+the rungs are fixed sizes — 1.9, 4.2, 8.5 px and on up at a step of 1 — and only
+their weights follow the radius. A new rung only ever appears past twice the
+radius, where the density is an eighth of its plateau, so the radius can be
+animated without a step.
+
+The per-level blur has to be wide enough that halving the level does not alias.
+It was 1.0 at first, which kept the finest rung at 1.1 px, but a thin edge
+moving across the grid rippled by 1.3% along its length and the halo carried
+kinks that read as rings. At 1.8 the ripple is 0.55%; see
+[Reconstruction](#reconstruction) for the rings.
 
 **Two tiers, so the budget never touches the core.** The level-0 pixel budget
 has to hold the glow's whole reach, which is several times the radius. Fitting
@@ -353,7 +395,7 @@ reconstructs both and adds them: the core at the pyramid step, over the layer
 only, and the halo at `step · 2^k` everywhere. Where `k` changes nothing moves,
 because the extents change and the content does not. Sweeping the radius from
 180 to 260 in steps of 4, across a change of tier, the largest step anywhere
-within 16 px of a bar is 1.46%, all of it the light the larger radius adds;
+within 16 px of a bar is 0.9%, all of it the light the larger radius adds;
 `TestInverseSquareDoesNotPop` fails on the old behaviour. The same split also
 keeps memory flat: a 1080p layer at radius 4000 builds a 12-level ladder whose
 halo starts four levels up.
@@ -363,11 +405,16 @@ too — each of these runs for both models:
 
 | | Classic | Inverse Square |
 |-|---------|----------------|
-| Glow slides as the radius animates (`TestGlowDoesNotSlideWithRadius`) | 0.001 px | 0.001 px |
-| Size spread across Full / Half / Third / Quarter | 0.66% | 0.66% |
-| Brightness spread across Full / Half / Quarter | 0.12% | 0.001% |
-| Centroid drift over sub-pixel motion | < 0.0001 px | < 0.0001 px |
+| Glow slides as the radius animates (`TestGlowDoesNotSlideWithRadius`) | 0.002 px | 0.001 px |
+| Size spread across Full / Half / Third / Quarter | 0.68% | 0.71% |
+| Brightness spread across Full / Half / Quarter, straight or premultiplied | 0.13% | < 0.001% |
+| Centroid drift over sub-pixel motion | < 0.0001 px | 0.0001 px |
+| Glow change between eighth-pixel steps, beyond the motion (`TestGlowDoesNotFlicker`) | 0.36% | 0.40% |
 | A requested window against the full render | < 0.1% | < 0.1%, two tiers |
+
+On a 4K layer with the settings from a user report (radius 4000, intensity
+39%), the glow over the transparent area comes out within 1.3% across the four
+Quality settings and within 2.5% between Full and Third.
 
 ### Energy
 
@@ -394,7 +441,18 @@ quadratic spline 0.08180 0.08123 0.08555 0.09015 0.09499 0.10000 0.10391 0.10443
 ```
 
 Draft and Normal use a quadratic B-spline (3 taps per axis, C¹), High and Best
-a cubic one (4 taps, C²). Cubic everywhere costs 50–75% more for no visible
+a cubic one (4 taps, C²).
+
+The collapse that feeds it has to be as smooth. Each rung is upsampled into the
+one below before the final reconstruction, and that upsample used to be
+bilinear: a kink at every coarse sample, and in a strong, wide glow the kinks of
+successive levels lined up into faint concentric rings. It is a quadratic
+B-spline now — at the two phases a 2× upsample needs, three taps of
+(0.28125, 0.6875, 0.03125) and their mirror. `TestNoRingsInTheHalo` measures the
+curvature of the log profile out of a small disc, where a power law is a smooth
+*n*/r²: the 99th percentile over the median was 4.7 for Inverse Square with
+the bilinear collapse and its first per-level blur, and is 2.0 now (2.2 for
+Classic). Cubic everywhere costs 50–75% more for no visible
 gain at the smaller pyramid steps those settings already use.
 `TestNoUpsampleCreases` keeps bilinear from creeping back in: it bins the
 second difference along a profile by position within a level-0 cell and fails if
@@ -427,7 +485,8 @@ brighter than black composites like Screen. An opaque pixel comes out exactly
 as before. In a linear working space premultiplied values already are light
 over black, and alpha grows as `a + glow_a·(1 − a)`, clamped to 1.
 `TestGlowIsLightOverBlack` compares an 8 bpc render with the float light it
-should show: within 2.3% for both models.
+should show: within 2.8% for both models. The result is then written in the
+destination's own convention — straight, for After Effects.
 
 Where the lit result leaves the output's range, **Highlight Rolloff** decides
 what happens. Clipping each channel independently reaches the ceiling at a
@@ -544,17 +603,17 @@ the size of the layer:
 
 | Radius | Draft | Normal | High | Best |
 |--------|-------|--------|------|------|
-| 20 | 113 | 111 | 254 | 260 |
-| 100 | 170 | 173 | 301 | 333 |
-| 400 | 202 | 210 | 352 | 543 |
-| 1000 | 197 | 250 | 356 | 500 |
+| 20 | 136 | 139 | 291 | 284 |
+| 100 | 188 | 199 | 331 | 379 |
+| 400 | 225 | 230 | 416 | 652 |
+| 1000 | 226 | 274 | 440 | 621 |
 
-Classic on that content and machine measured 122 / 194 / 285 / 192 ms at
+Classic on that content and machine measured 120 / 185 / 283 / 200 ms at
 Normal for the same radii, so the two cost about the same: the core tier is at
 most the layer, and the halo tier starts as far up the ladder as the budget
 needs. A 4K layer is over the Normal budget on its own, so its core is built at
-a step of 2 — a 2.3 px finest octave, which at 4K is the same size in the frame
-as 1.1 px at 1080p.
+a step of 2 — a 3.8 px finest octave, which at 4K is the same size in the frame
+as 1.9 px at 1080p.
 
 What mattered, in order: restructuring the blur so the tap loops vectorise
 (taps in the outer loop, pixels in the inner loop), giving level 0 a pixel

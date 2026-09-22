@@ -9,7 +9,7 @@
 
 #define AB_GLOW_VERSION_MAJOR 1
 #define AB_GLOW_VERSION_MINOR 2
-#define AB_GLOW_VERSION_BUG 0
+#define AB_GLOW_VERSION_BUG 1
 #define AB_GLOW_VERSION_BUILD 1
 
 // Set by CMake from the git revision. Shown in the effect's parameters so the

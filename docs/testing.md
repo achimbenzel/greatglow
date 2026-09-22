@@ -98,7 +98,7 @@ off in a normal build and cost nothing there.
 ## Manual checks
 
 15. **The right build.** The parameter list ends with a group named after the
-    build (`v1.2.0 (abc1234)`). Check it matches what was just installed before
+    build (`v1.2.1 (abc1234)`). Check it matches what was just installed before
     trusting any of the above — After Effects scans both the application's
     `Plug-ins` folder and `Common\Plug-ins\7.0\MediaCore`, and a stale copy in
     the other one will be loaded instead.
@@ -111,6 +111,11 @@ off in a normal build and cost nothing there.
     hundred pixels. Keyframe Radius from 100 to 600 and scrub it: the line next
     to the letters must not jump at any frame. Classic should look like
     v1.1.0, apart from being brighter over transparency.
-18. **Burn to White.** On saturated text with Intensity pushed up, the letters
+18. **Edges and motion.** Anti-aliased text at 100% intensity: the letters'
+    edges stay smooth, with the effect on and off. Animate the text's position
+    slowly: the glow moves with it and does not shimmer or crawl. Switch the
+    viewer between Full and Third at a fixed zoom: the glow is the same
+    strength.
+19. **Burn to White.** On saturated text with Intensity pushed up, the letters
     burn towards white while the glow around them keeps its colour, in 8 bpc
     and in 32 bpc.

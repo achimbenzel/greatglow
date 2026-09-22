@@ -14,7 +14,8 @@ void DownsampleHalf(const ImageF& src, ImageF& dst, TaskRunner& runner);
 // clamping.
 void DownsampleHalfInto(const ImageF& src, ImageF& dst, int offset_x, int offset_y, TaskRunner& runner);
 
-// dst = dst * dst_weight + bilinear upsample of the half-resolution `src`.
+// dst = dst * dst_weight + quadratic B-spline upsample of the half-resolution
+// `src`.
 void UpsampleHalfAccumulate(const ImageF& src, ImageF& dst, const PixelF& dst_weight, TaskRunner& runner);
 
 void ScaleInPlace(ImageF& image, const PixelF& scale, TaskRunner& runner);

@@ -244,6 +244,17 @@ void MakeWorld(PF_EffectWorld* world, WorldStorage* storage, int width, int heig
     world->pix_aspect_ratio.den = 1;
 }
 
+// A strip in the layer's top-left corner, away from the bright block, whose
+// coverage ramps from 0.1 to 0.9: straight white at partial alpha, like the
+// edge of anti-aliased text.
+bool InEdgeRamp(const PF_EffectWorld* world, int x, int y) {
+    return world->width >= 60 && world->height >= 30 && y >= 4 && y < 10 && x >= 4 && x < 44;
+}
+
+float EdgeRampCoverage(int x) {
+    return 0.1f + 0.8f * static_cast<float>(x - 4) / 39.0f;
+}
+
 void FillTestScene(PF_EffectWorld* world, short bitdepth) {
     for (int y = 0; y < world->height; ++y) {
         unsigned char* row = reinterpret_cast<unsigned char*>(world->data) +
@@ -254,6 +265,12 @@ void FillTestScene(PF_EffectWorld* world, short bitdepth) {
             const bool dim = (x > world->width / 2 + 20 && x < world->width - 20 && y > 20 && y < 60);
             float value = bright ? 1.0f : (dim ? 0.25f : 0.0f);
             float alpha = (bright || dim) ? 1.0f : 0.0f;
+            // An anti-aliasing ramp, stored the way After Effects stores it:
+            // full colour, coverage in alpha.
+            if (InEdgeRamp(world, x, y)) {
+                value = 1.0f;
+                alpha = EdgeRampCoverage(x);
+            }
             if (bitdepth == 8) {
                 abglow::Pixel8& p = reinterpret_cast<abglow::Pixel8*>(row)[x];
                 p.a = static_cast<unsigned char>(alpha * 255.0f);
@@ -465,6 +482,20 @@ bool RunRender(EffectMainFn effect_main, const RenderOptions& options, const std
     const int centre_y = static_cast<int>(result_height) / 2;
     const abglow::PixelF centre = image.GetPixel(centre_x, centre_y);
     Check(centre.r > 0.0f, "the rendered frame is not empty");
+
+    // After Effects' worlds are straight. Read as premultiplied, the ramp's
+    // full colour lifted its coverage to 1 all along - hard, pixelated edges.
+    if (InEdgeRamp(&host.input_world, 4, 4) && options.bitdepth != 32) {
+        const int ox = static_cast<int>(host.layer_rect.left - pre_output.result_rect.left);
+        const int oy = static_cast<int>(host.layer_rect.top - pre_output.result_rect.top);
+        const abglow::PixelF faint = image.GetPixel(ox + 4, oy + 6);
+        const abglow::PixelF solid = image.GetPixel(ox + 43, oy + 6);
+        // The ramp glows itself, which adds coverage: measured 0.33-0.58
+        // against a coverage of 0.1. Read as premultiplied it was 1.0.
+        Check(faint.a < 0.75f, "an anti-aliased edge keeps its low coverage");
+        Check(solid.a > faint.a + 0.3f, "coverage still ramps along the edge");
+        Check(faint.r > 0.9f, "the edge keeps its full colour, stored straight");
+    }
 
     if (!out_dir.empty()) {
         abglow_test::WritePng(out_dir + "/mockhost_" + options.label + ".png", image);

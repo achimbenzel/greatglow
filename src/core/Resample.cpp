@@ -80,40 +80,41 @@ void DownsampleHalfInto(const ImageF& src, ImageF& dst, int offset_x, int offset
     });
 }
 
+// The collapse has to be as smooth as the final reconstruction. Bilinear
+// leaves a kink at every source sample, and in a strong, wide glow those kinks
+// stack up from one level to the next into faint concentric rings. A quadratic
+// B-spline has a continuous first derivative; at the two phases a 2x upsample
+// needs, it is the three taps below.
 void UpsampleHalfAccumulate(const ImageF& src, ImageF& dst, const PixelF& dst_weight, TaskRunner& runner) {
     if (src.Empty() || dst.Empty()) return;
 
+    // Output 2k sits a quarter of a source pixel before source k, 2k+1 a quarter
+    // after it.
+    static constexpr float kEven[3] = {0.28125f, 0.6875f, 0.03125f};
+    static constexpr float kOdd[3] = {0.03125f, 0.6875f, 0.28125f};
+
     ParallelRows(runner, dst.height, [&](int begin, int end, int) {
         for (int y = begin; y < end; ++y) {
-            const float v = static_cast<float>(y) * 0.5f - 0.25f;
-            const int v0 = static_cast<int>(std::floor(v));
-            const float fy = v - static_cast<float>(v0);
-            const int sy0 = ClampInt(v0, 0, src.height - 1);
-            const int sy1 = ClampInt(v0 + 1, 0, src.height - 1);
-            const PixelF* row0 = src.Row(sy0);
-            const PixelF* row1 = src.Row(sy1);
+            const int cy = y >> 1;
+            const float* wy = (y & 1) ? kOdd : kEven;
+            const PixelF* rows[3];
+            for (int j = 0; j < 3; ++j) rows[j] = src.Row(ClampInt(cy - 1 + j, 0, src.height - 1));
             PixelF* out = dst.Row(y);
             for (int x = 0; x < dst.width; ++x) {
-                const float u = static_cast<float>(x) * 0.5f - 0.25f;
-                const int u0 = static_cast<int>(std::floor(u));
-                const float fx = u - static_cast<float>(u0);
-                const int sx0 = ClampInt(u0, 0, src.width - 1);
-                const int sx1 = ClampInt(u0 + 1, 0, src.width - 1);
-
-                const float w00 = (1.0f - fx) * (1.0f - fy);
-                const float w01 = fx * (1.0f - fy);
-                const float w10 = (1.0f - fx) * fy;
-                const float w11 = fx * fy;
+                const int cx = x >> 1;
+                const float* wx = (x & 1) ? kOdd : kEven;
+                int sx[3];
+                for (int i = 0; i < 3; ++i) sx[i] = ClampInt(cx - 1 + i, 0, src.width - 1);
 
                 PixelF acc = out[x];
                 acc.a *= dst_weight.a;
                 acc.r *= dst_weight.r;
                 acc.g *= dst_weight.g;
                 acc.b *= dst_weight.b;
-                AccumulateScaled(acc, row0[sx0], w00);
-                AccumulateScaled(acc, row0[sx1], w01);
-                AccumulateScaled(acc, row1[sx0], w10);
-                AccumulateScaled(acc, row1[sx1], w11);
+                for (int j = 0; j < 3; ++j) {
+                    const PixelF* row = rows[j];
+                    for (int i = 0; i < 3; ++i) AccumulateScaled(acc, row[sx[i]], wy[j] * wx[i]);
+                }
                 out[x] = acc;
             }
         }
