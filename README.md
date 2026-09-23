@@ -88,7 +88,7 @@ Restart After Effects; the effect appears under **Effect ▸ AB Tools ▸ Profou
 Pick **one** of those two folders. After Effects scans both, so a copy left in
 the other one can be the copy it loads, and replacing the file you were
 thinking of changes nothing. The effect's parameters end with a group named
-after the build it came from (`v1.2.1 (abc1234)`), so the loaded build can be
+after the build it came from (`v1.2.2 (abc1234)`), so the loaded build can be
 read straight off the panel. To find every copy on the machine:
 
 ```powershell
@@ -166,6 +166,9 @@ the look of a project saved by an earlier build:
   moved, blobs on small text, a glow twice as strong at Third resolution — and
   came out stair-stepped with the glow on. Anything with soft or anti-aliased
   edges looks different, and right, now.
+* **Near-invisible content no longer glows (v1.2.2).** A layer at a few 1/255
+  of opacity - a soft light inside a precomp - passed the threshold on its
+  stored colour in v1.2.1 and bloomed into a wide disc of posterised rings.
 
 ### Known limitation: anisotropy
 

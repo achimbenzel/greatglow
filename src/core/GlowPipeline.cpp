@@ -17,6 +17,7 @@ namespace {
 
 constexpr float kOpaque = 0.999f;
 constexpr float kTransparent = 1.0e-6f;
+constexpr float kCoverageTrusted = 0.5f;
 
 struct Threshold {
     float level = 0.0f;
@@ -87,11 +88,24 @@ inline PixelF ToHostAlpha(const PixelF& p, AlphaMode mode) {
 // extracted light a non-linear function of coverage, so the same layer emits
 // measurably less once After Effects has downsampled it for a reduced render
 // resolution - 8% less at Quarter on anti-aliased text.
-inline PixelF ExtractHighlight(const PixelF& linear, const Threshold& threshold) {
+inline PixelF ExtractHighlight(const PixelF& linear, float reach, const Threshold& threshold) {
     // Premultiplied pixels with no alpha emit no light, whatever RGB they carry.
     if (linear.a <= kTransparent && !threshold.unmult) return PixelF{0.0f, 0.0f, 0.0f, 0.0f};
     const float inv_coverage = linear.a >= kOpaque ? 1.0f : 1.0f / std::max(linear.a, kTransparent);
-    const float level = std::max(linear.r, std::max(linear.g, linear.b)) * inv_coverage;
+    const float own = std::max(linear.r, std::max(linear.g, linear.b)) * inv_coverage;
+    float level = own;
+    // A pixel cannot say on its own whether it is the edge of a bright shape
+    // or a bright colour at almost no opacity - a soft light or a fade inside
+    // a precomp, stored straight at 1/255. Judged on its own colour, such a
+    // near-invisible layer passed the threshold, and because 8 bpc alpha
+    // comes in steps of 1/255 each step doubled or tripled its light: a wide
+    // disc of posterised rings far past the radius, in whatever colour the
+    // invisible pixels happened to store. Its neighbours tell them apart: an
+    // edge sits next to a covered pixel, a faint layer does not. `reach` is the
+    // most coverage in the pixel's 3x3 neighbourhood; below a half the pixel is
+    // judged on correspondingly less of its brightness. Edges keep exactly the
+    // linearity in coverage the resolution independence rests on.
+    if (!threshold.unmult && reach < kCoverageTrusted) level *= reach / kCoverageTrusted;
     if (level <= 0.0f) return PixelF{0.0f, 0.0f, 0.0f, 0.0f};
 
     float above = level - threshold.level;
@@ -105,7 +119,7 @@ inline PixelF ExtractHighlight(const PixelF& linear, const Threshold& threshold)
     float contribution = above / std::max(level, 1.0e-6f);
     if (threshold.saturation_bias != 0.0f) {
         const float low = std::min(linear.r, std::min(linear.g, linear.b)) * inv_coverage;
-        const float saturation = level > 0.0f ? 1.0f - low / level : 0.0f;
+        const float saturation = own > 0.0f ? 1.0f - low / own : 0.0f;
         contribution *= std::max(0.0f, 1.0f + threshold.saturation_bias * saturation);
     }
     // Unmult reads coverage from the brightest channel, so black is treated as
@@ -154,10 +168,23 @@ TentTaps MakeTentTaps(int scale) {
 template <PixelDepth kDepth>
 void ExtractSourceRow(const HostImage& source, int src_y, const Threshold& threshold,
                       const TransferFunction& transfer, PixelF* out) {
-    const void* row = source.ConstRow(src_y);
+    const void* rows[3];
+    for (int j = 0; j < 3; ++j) rows[j] = source.ConstRow(std::clamp(src_y - 1 + j, 0, source.height - 1));
+    const void* row = rows[1];
+    auto column_alpha = [&](int x) {
+        const int cx = std::clamp(x, 0, source.width - 1);
+        return std::max(ReadRowPixel<kDepth>(rows[0], cx).a,
+                        std::max(ReadRowPixel<kDepth>(rows[1], cx).a, ReadRowPixel<kDepth>(rows[2], cx).a));
+    };
+    float left = column_alpha(-1);
+    float centre = column_alpha(0);
     for (int x = 0; x < source.width; ++x) {
-        out[x] = ExtractHighlight(LinearPremultiplied(ReadRowPixel<kDepth>(row, x), transfer, source.alpha),
+        const float right = column_alpha(x + 1);
+        const float reach = std::max(left, std::max(centre, right));
+        out[x] = ExtractHighlight(LinearPremultiplied(ReadRowPixel<kDepth>(row, x), transfer, source.alpha), reach,
                                   threshold);
+        left = centre;
+        centre = right;
     }
 }
 
@@ -445,9 +472,13 @@ inline float Quantize(float value, float max_value, float dither) {
     return std::clamp(v, 0.0f, max_value);
 }
 
+// Alpha is dithered with the colour. Stored straight, a glow over a
+// transparent layer carries its brightness in alpha - its colour is the hue at
+// full strength - so undithered alpha banded the tail into steps of 1/255.
+// Stochastic rounding leaves 0 and 1 where they are.
 inline void StorePixel8(void* row, int x, const PixelF& encoded, float dither) {
     Pixel8& out = static_cast<Pixel8*>(row)[x];
-    out.a = static_cast<std::uint8_t>(Quantize(encoded.a, kMaxChannel8, 0.0f));
+    out.a = static_cast<std::uint8_t>(Quantize(encoded.a, kMaxChannel8, dither));
     out.r = static_cast<std::uint8_t>(Quantize(encoded.r, kMaxChannel8, dither));
     out.g = static_cast<std::uint8_t>(Quantize(encoded.g, kMaxChannel8, dither));
     out.b = static_cast<std::uint8_t>(Quantize(encoded.b, kMaxChannel8, dither));
@@ -455,7 +486,7 @@ inline void StorePixel8(void* row, int x, const PixelF& encoded, float dither) {
 
 inline void StorePixel16(void* row, int x, const PixelF& encoded, float dither) {
     Pixel16& out = static_cast<Pixel16*>(row)[x];
-    out.a = static_cast<std::uint16_t>(Quantize(encoded.a, kMaxChannel16, 0.0f));
+    out.a = static_cast<std::uint16_t>(Quantize(encoded.a, kMaxChannel16, dither));
     out.r = static_cast<std::uint16_t>(Quantize(encoded.r, kMaxChannel16, dither));
     out.g = static_cast<std::uint16_t>(Quantize(encoded.g, kMaxChannel16, dither));
     out.b = static_cast<std::uint16_t>(Quantize(encoded.b, kMaxChannel16, dither));

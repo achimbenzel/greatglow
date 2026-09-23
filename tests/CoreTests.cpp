@@ -2052,6 +2052,48 @@ void TestNoRingsInTheHalo() {
     }
 }
 
+// A near-invisible layer - a soft light at 1-3/255 opacity inside a precomp,
+// stored straight in a saturated colour - must not glow as if it were bright.
+// Judged on its own colour it passed the threshold, and the 1/255 steps of its
+// alpha became a wide disc of posterised rings, coloured by whatever the
+// invisible pixels stored. An edge next to a covered pixel still counts fully.
+void TestFaintLayerDoesNotGlow() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 600;
+    const int height = 400;
+    TestImage source(width, height, PixelDepth::kBits8, AlphaMode::kStraight);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const double d = std::hypot(x - 300.0, y - 200.0);
+            const float alpha = std::round(static_cast<float>(std::max(0.0, 1.0 - d / 250.0)) * 3.0f) / 255.0f;
+            source.SetPixel(x, y, PixelF{alpha, 0.45f, 0.1f, 1.0f});
+        }
+    }
+    GlowSettings settings = DefaultSettings();
+    settings.model = GlowModel::kInverseSquare;
+    settings.working_space = WorkingSpace::kSrgb;
+    settings.threshold = 0.5f;
+    settings.radius_x = settings.radius_y = 80.0f;
+    settings.intensity = 0.79f;
+    settings.exposure = 0.92f;
+    settings.composite = CompositeMode::kGlowOnly;
+    settings.dither = false;
+
+    TestImage dest(width, height, PixelDepth::kBits8);
+    GlowRender render;
+    render.source = source.View();
+    render.dest = dest.View();
+    Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk, "faint render succeeds");
+    float brightest = 0.0f;
+    for (int y = 0; y < height; y += 4) {
+        for (int x = 0; x < width; x += 4) brightest = std::max(brightest, dest.GetPixel(x, y).b);
+    }
+    // Measured 0 now; judged on its own colour the disc reached 36/255.
+    Check(brightest < 2.0f / 255.0f, "a near-invisible layer does not glow");
+}
+
 }  // namespace
 
 int main() {
@@ -2100,6 +2142,7 @@ int main() {
     TestStraightEdgesStayAntiAliased();
     TestGlowDoesNotFlicker();
     TestNoRingsInTheHalo();
+    TestFaintLayerDoesNotGlow();
 
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

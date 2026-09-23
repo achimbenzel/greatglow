@@ -89,6 +89,20 @@ glow's light at Quarter resolution on anti-aliased text — a visible difference
 that no amount of getting the pyramid right would have fixed.
 `TestBrightnessIsResolutionIndependent` asserts 2%; measured spread is 0.1%.
 
+A pixel cannot say on its own whether it is the edge of a bright shape or a
+bright colour at almost no opacity — a soft light or a fade inside a precomp,
+stored straight at 1/255. Judged on its own colour, such a near-invisible layer
+passed the threshold, and since 8 bpc alpha comes in steps of 1/255, each step
+doubled or tripled its light: a disc of posterised rings far past the radius,
+in whatever colour the invisible pixels stored (v1.2.1, fixed in v1.2.2). The
+neighbours tell the two apart. An edge sits next to a covered pixel; a faint
+layer does not. The pixel is judged on its own brightness scaled by the most
+coverage in its 3×3 neighbourhood, up to a half, so edges keep the linearity
+above and a faint layer is judged on roughly the light it shows.
+`TestFaintLayerDoesNotGlow` covers it. Alpha is also dithered with the colour
+now: stored straight, a glow over transparency carries its brightness in alpha,
+and undithered alpha banded the tail.
+
 Extraction and the first downsample are one pass: each pyramid-level-0 pixel
 gathers the extracted light under it, so a single very bright pixel still
 contributes its full energy rather than being thresholded away after averaging.
