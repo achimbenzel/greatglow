@@ -50,13 +50,17 @@ enum ParamId {
     kIdCoreGroup = 32,
     kIdCoreRadius = 33,
     kIdCoreIntensity = 34,
-    kIdCoreGroupEnd = 35
+    kIdCoreGroupEnd = 35,
+    kIdShapeGroup = 36,
+    kIdCoreSoftness = 37,
+    kIdAspectRatio = 38,
+    kIdShapeGroupEnd = 39
 };
 
 // The layout as shipped. These numbers are in every saved project that uses the
 // effect, so a change here is a change to a file format other people's work
 // depends on. Appending is fine; anything else is not.
-static_assert(kParamCount == 36, "parameters may only be appended");
+static_assert(kParamCount == 40, "parameters may only be appended");
 static_assert(kParamExpandBounds == 17 && kParamRolloff == 18, "shipped parameter order");
 static_assert(kParamRenderGroupEnd == 19, "shipped parameter order");
 static_assert(kParamAboutGroupStart == 20 && kParamAboutGroupEnd == 21, "shipped parameter order");
@@ -73,6 +77,10 @@ static_assert(kParamCoreGroupStart == 32 && kIdCoreGroup == 32, "shipped paramet
 static_assert(kParamCoreRadius == 33 && kIdCoreRadius == 33, "shipped parameter order and id");
 static_assert(kParamCoreIntensity == 34 && kIdCoreIntensity == 34, "shipped parameter order and id");
 static_assert(kParamCoreGroupEnd == 35 && kIdCoreGroupEnd == 35, "shipped parameter order and id");
+static_assert(kParamShapeGroupStart == 36 && kIdShapeGroup == 36, "shipped parameter order and id");
+static_assert(kParamCoreSoftness == 37 && kIdCoreSoftness == 37, "shipped parameter order and id");
+static_assert(kParamAspectRatio == 38 && kIdAspectRatio == 38, "shipped parameter order and id");
+static_assert(kParamShapeGroupEnd == 39 && kIdShapeGroupEnd == 39, "shipped parameter order and id");
 
 constexpr char kQualityChoices[] = "Draft|Normal|High|Best";
 constexpr char kCompositeChoices[] = "Add|Screen|Glow Only";
@@ -284,6 +292,24 @@ PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data) {
     AEFX_CLR_STRUCT(def);
     PF_END_TOPIC(kIdCoreGroupEnd);
 
+    // Appended after the Core group, since saved projects address parameters
+    // by position. Both defaults leave the glow exactly as it was.
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPICX("Shape", 0, kIdShapeGroup);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Core Softness", 0.0f, 100.0f, 0.0f, 100.0f, 0.0f, PF_Precision_TENTHS,
+                         PF_ValueDisplayFlag_PERCENT, 0, kIdCoreSoftness);
+
+    // Width over height: 1 is round, 2 twice as wide as tall, 0 a vertical
+    // streak.
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Aspect Ratio", 0.0f, 20.0f, 0.0f, 4.0f, 1.0f, PF_Precision_HUNDREDTHS, 0, 0,
+                         kIdAspectRatio);
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kIdShapeGroupEnd);
+
     out_data->num_params = kParamCount;
     return PF_Err_NONE;
 }
@@ -308,6 +334,8 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     int glow_model = 1;
     float core_radius = 20.0f;
     float core_intensity = 100.0f;
+    float core_softness = 0.0f;
+    float aspect_ratio = 1.0f;
     float falloff = 2.0f;
     float saturation_bias = 0.0f;
     float source_opacity = 100.0f;
@@ -340,6 +368,8 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     if (!err) err = CheckoutPopup(in_data, kParamGlowModel, &glow_model);
     if (!err) err = CheckoutFloat(in_data, kParamCoreRadius, &core_radius);
     if (!err) err = CheckoutFloat(in_data, kParamCoreIntensity, &core_intensity);
+    if (!err) err = CheckoutFloat(in_data, kParamCoreSoftness, &core_softness);
+    if (!err) err = CheckoutFloat(in_data, kParamAspectRatio, &aspect_ratio);
     if (err) return err;
 
     // Slider distances are authored at full resolution; convert to the pixels
@@ -374,6 +404,8 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     settings.model = static_cast<GlowModel>(std::clamp(glow_model - 1, 0, 1));
     settings.core_radius = std::max(0.0f, core_radius) * settings.resolution;
     settings.core_intensity = std::max(0.0f, core_intensity) * 0.01f;
+    settings.core_softness = std::clamp(core_softness * 0.01f, 0.0f, 1.0f);
+    settings.aspect_ratio = std::max(0.0f, aspect_ratio);
     settings.falloff = std::clamp(falloff, 1.0f, 3.0f);
     settings.aberration_r = std::clamp(multiply_r * 0.01f, 0.1f, 4.0f);
     settings.aberration_g = std::clamp(multiply_g * 0.01f, 0.1f, 4.0f);

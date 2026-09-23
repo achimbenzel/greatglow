@@ -135,6 +135,8 @@ Ship release builds from Visual Studio; mingw is for verification.
 | Glow Model | Inverse Square / Classic | Inverse Square: the same light in every octave from a fixed one-pixel core to the radius, so Radius is reach and the core stays hot. Classic: the energy-conserving bloom, which scales as a whole with the radius. |
 | Core Radius | 0 – 1000 px (20) | Size of the core: the soft rim of light hugging the source, made by the finest octaves. It moves the rim's light to its own size without changing how much there is — smaller is a tight, hard rim, larger a wide, soft one — and works at any Core Intensity. |
 | Core Intensity | 0 – 1000 % (100 %) | Strength of the core, apart from the halo that Radius sets. 0 % leaves the source crisp inside a halo; above 100 % the rim runs hotter. At 20 px and 100 % the glow is exactly what it was before the Core group existed, so older projects open unchanged. |
+| Core Softness | 0 – 100 % (0 %) | How gently the core fades. It takes light off the hard line along the source's edge and lets the rim trail off into the halo instead of ending on a Gaussian edge — the same light, arriving as a gentler slope. 0 % is the core as it was. |
+| Aspect Ratio | 0 – 20 (1.00) | Width over height of the glow. 1 is round; 2 is twice as wide as tall; 0.5 twice as tall as wide; 0 a vertical streak. The longer axis keeps the radius. The glow is stretched along the layer's axes; there is no angle control. |
 
 Radius is in full-resolution pixels: it is scaled automatically for draft
 resolutions and for non-square pixels, so a glow stays round and the same size
@@ -171,32 +173,27 @@ the look of a project saved by an earlier build:
 * **Near-invisible content no longer glows (v1.2.2).** A layer at a few 1/255
   of opacity - a soft light inside a precomp - passed the threshold on its
   stored colour in v1.2.1 and bloomed into a wide disc of posterised rings.
+* **Non-square-pixel compositions glow round (v1.4.0).** The pyramid used to
+  render a glow on 2:1 pixels about a fifth too wide; each axis now has its own
+  decimation schedule. Square-pixel compositions are unchanged, and Core
+  Softness and Aspect Ratio default to the earlier look.
 
-### Known limitation: anisotropy
+### Anisotropy
 
-The per-level Gaussian is anisotropic, but the pyramid's own resampling — the
-decimation and the reconstruction filter — is isotropic, and it contributes a
-fixed amount of blur in render pixels. The narrower axis has a smaller sigma, so
-that fixed amount is a larger fraction of it and the glow comes out wider along
-that axis than asked for. Asking for a 4:1 glow renders about 2:1; roughly, the
-rendered ratio is the square root of the requested one, and how much is lost
-depends on the radius, so it cannot be calibrated away with a correction curve.
+Each axis of the diffusion pyramid is decimated on its own schedule: an axis is
+halved going into a level only once its own blur there survives the coarser
+pixel. A round glow halves both axes every level, exactly as before; a squeezed
+axis stays finer for longer, so its resampling cannot smear it wider than asked.
+That is what makes Aspect Ratio render the shape it names (2.00 measures 1.97:1
+at every quality) and what keeps a glow round on non-square pixels:
 
-The visible consequence is on non-square-pixel compositions, where the radius is
-divided by the pixel aspect to keep the glow round in composition space:
+| Pixel aspect | measured width ratio (should be 1.0) | before v1.4.0 |
+|--------------|--------------------------------------|---------------|
+| 1.00 | 1.00 | 1.000 |
+| 1.46 | 0.97 | 1.049 |
+| 2.00 | 1.02 | 1.188 |
 
-| Pixel aspect | measured width ratio (should be 1.0) |
-|--------------|--------------------------------------|
-| 1.00 | 1.000 |
-| 1.46 | 1.049 |
-| 2.00 | 1.188 |
-
-Square-pixel compositions — which is everything at 1080p, 4K and UHD — are
-unaffected. It is also why there is no Aspect Ratio control: a dial that
-rendered about the square root of its own number would be worse than none.
-
-The fix is to decimate each axis on its own schedule rather than halving both
-together, so an axis is only halved once its own blur can survive it.
+(The residue is the measurement's whole-pixel steps.)
 
 ## Testing
 

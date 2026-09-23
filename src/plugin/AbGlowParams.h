@@ -47,7 +47,11 @@ enum ParamIndex {
     kParamCoreRadius = 33,
     kParamCoreIntensity = 34,
     kParamCoreGroupEnd = 35,
-    kParamCount = 36
+    kParamShapeGroupStart = 36,
+    kParamCoreSoftness = 37,
+    kParamAspectRatio = 38,
+    kParamShapeGroupEnd = 39,
+    kParamCount = 40
 };
 
 PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data);

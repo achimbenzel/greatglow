@@ -121,6 +121,92 @@ void UpsampleHalfAccumulate(const ImageF& src, ImageF& dst, const PixelF& dst_we
     });
 }
 
+namespace {
+
+// Taps along one axis for one destination index.
+struct AxisSpan {
+    int first = 0;
+    int count = 1;
+    const float* weight = nullptr;
+};
+
+constexpr float kDownTent[4] = {0.125f, 0.375f, 0.375f, 0.125f};
+constexpr float kOne[1] = {1.0f};
+constexpr float kUpEven[3] = {0.28125f, 0.6875f, 0.03125f};
+constexpr float kUpOdd[3] = {0.03125f, 0.6875f, 0.28125f};
+
+inline AxisSpan DownSpan(int d, bool half, int offset) {
+    if (!half) return AxisSpan{d - offset, 1, kOne};
+    return AxisSpan{2 * (d - offset) - 1, 4, kDownTent};
+}
+
+inline AxisSpan UpSpan(int d, bool twice) {
+    if (!twice) return AxisSpan{d, 1, kOne};
+    return AxisSpan{(d >> 1) - 1, 3, (d & 1) ? kUpOdd : kUpEven};
+}
+
+}  // namespace
+
+void DownsampleAxes(const ImageF& src, ImageF& dst, bool half_x, bool half_y, int offset_x, int offset_y,
+                    bool zero_outside, TaskRunner& runner) {
+    if (dst.Empty()) return;
+    ParallelRows(runner, dst.height, [&](int begin, int end, int) {
+        for (int y = begin; y < end; ++y) {
+            PixelF* out = dst.Row(y);
+            const AxisSpan ys = DownSpan(y, half_y, offset_y);
+            for (int x = 0; x < dst.width; ++x) {
+                const AxisSpan xs = DownSpan(x, half_x, offset_x);
+                PixelF acc{0.0f, 0.0f, 0.0f, 0.0f};
+                if (!src.Empty()) {
+                    for (int j = 0; j < ys.count; ++j) {
+                        int sy = ys.first + j;
+                        if (sy < 0 || sy >= src.height) {
+                            if (zero_outside) continue;
+                            sy = ClampInt(sy, 0, src.height - 1);
+                        }
+                        const PixelF* row = src.Row(sy);
+                        for (int i = 0; i < xs.count; ++i) {
+                            int sx = xs.first + i;
+                            if (sx < 0 || sx >= src.width) {
+                                if (zero_outside) continue;
+                                sx = ClampInt(sx, 0, src.width - 1);
+                            }
+                            AccumulateScaled(acc, row[sx], ys.weight[j] * xs.weight[i]);
+                        }
+                    }
+                }
+                out[x] = acc;
+            }
+        }
+    });
+}
+
+void UpsampleAxesAccumulate(const ImageF& src, ImageF& dst, bool double_x, bool double_y,
+                            const PixelF& dst_weight, TaskRunner& runner) {
+    if (src.Empty() || dst.Empty()) return;
+    ParallelRows(runner, dst.height, [&](int begin, int end, int) {
+        for (int y = begin; y < end; ++y) {
+            const AxisSpan ys = UpSpan(y, double_y);
+            PixelF* out = dst.Row(y);
+            for (int x = 0; x < dst.width; ++x) {
+                const AxisSpan xs = UpSpan(x, double_x);
+                PixelF acc = out[x];
+                acc.a *= dst_weight.a;
+                acc.r *= dst_weight.r;
+                acc.g *= dst_weight.g;
+                acc.b *= dst_weight.b;
+                for (int j = 0; j < ys.count; ++j) {
+                    const PixelF* row = src.Row(ClampInt(ys.first + j, 0, src.height - 1));
+                    for (int i = 0; i < xs.count; ++i) {
+                        AccumulateScaled(acc, row[ClampInt(xs.first + i, 0, src.width - 1)], ys.weight[j] * xs.weight[i]);
+                    }
+                }
+                out[x] = acc;
+            }
+        }
+    });
+}
+
 void ScaleInPlace(ImageF& image, const PixelF& scale, TaskRunner& runner) {
     if (image.Empty()) return;
     ParallelRows(runner, image.height, [&](int begin, int end, int) {

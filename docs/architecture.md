@@ -451,6 +451,37 @@ defaults, the rim 6 px from a shape going from 0.179 to 0.222 at 80 px and
 out staying within 5% when the core is turned off. Classic has little to move
 at large radii, because its finest octave is a fraction of the radius.
 
+Core Softness changes where the moved light lands, not how much of it there is.
+The placement past the core radius flattens from `exp(−s² / 2)` towards
+`exp(−s^0.6 / 2)`, with `s = σ / σ_core`, and the rungs finer than the core
+radius are weighted by `s^softness`, which takes light off the hard line the
+finest octaves draw along the edge. At 0% both factors are 1 and the plan is
+unchanged. `TestCoreSoftness` checks that at 100% the rim 40 px out doubles,
+the glow 100 px out rises by more than 30%, the shape's own face gets darker
+and the total light stays within 2%.
+
+### Per-axis decimation and Aspect Ratio
+
+Aspect Ratio scales one axis of every octave: `f_x = min(1, a)`,
+`f_y = min(1, 1 / a)`, multiplied by the ratio of the two radii (pixel aspect,
+per-axis downsampling). Each axis then gets its own schedule through the
+pyramid. Level `i` of a round glow adds a blur of `level_sigma · scale · 2^i`
+render pixels; a squeezed axis adds `f` times that, and it is halved going
+into level `i` only if that blur is still at least a full level blur at the
+coarser pixel. So an axis at `f = 1` halves every level, as before, and a
+squeezed one stays at a finer pixel until its blur has caught up. The blur
+within the level is the wanted blur in that level's pixels. Where both axes
+halve together the original half-size filters run, which is what keeps a
+round glow bit for bit what it was; otherwise the same tent (down) and
+quadratic B-spline (up) are applied to the halved axis only and the other one
+is passed through. The halo tier's step, the tiers' origins and the core tier's
+margin are per axis too, and a squeezed axis only spans its own reach.
+
+`TestAspectRatio` checks both models at Draft and Best: 1 is round, 2 and 0.5
+are 2:1 within 10%, 0 spreads no further sideways than the source and the
+extraction, and the total light stays within 3%. The window test runs at 0.4
+and 2.5 as well, so the per-axis grid is anchored as firmly as the round one.
+
 ### Energy
 
 In the Classic model every filter in the chain is normalised, so the glow

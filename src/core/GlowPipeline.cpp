@@ -339,7 +339,10 @@ AxisTaps MakeTaps(float coordinate, int limit, UpsampleFilter filter) {
 // it covers at all.
 struct GlowSource {
     const ImageF* image = nullptr;
-    int scale = 1;
+    // Render pixels per level pixel on each axis: the axes are halved on their
+    // own schedules, so a level can be coarser across than down.
+    int scale_x = 1;
+    int scale_y = 1;
     PixelPoint grid_start;
     // Horizontal taps per destination column; identical for every row.
     const AxisTaps* columns = nullptr;
@@ -348,6 +351,20 @@ struct GlowSource {
     int y_begin = 0;
     int y_end = 0;
 };
+
+// Taps for destination pixel `offset` (from the level's grid start) on an axis
+// `step` render pixels per level pixel. An axis at full resolution is read one
+// to one: a B-spline evaluated on its own grid would blur it.
+AxisTaps MakeScaledTaps(int offset, int step, int limit, UpsampleFilter filter) {
+    if (step == 1) {
+        AxisTaps taps;
+        const int index = offset < 0 ? 0 : (offset >= limit ? limit - 1 : offset);
+        for (int i = 0; i < 4; ++i) taps.index[i] = index;
+        taps.weight[0] = 1.0f;
+        return taps;
+    }
+    return MakeTaps((static_cast<float>(offset) + 0.5f) / static_cast<float>(step) - 0.5f, limit, filter);
+}
 
 struct CompositeContext {
     CompositeMode mode = CompositeMode::kAdd;
@@ -421,24 +438,24 @@ class GlowSampler {
 public:
     GlowSampler(const GlowSource& source, const CompositeContext& ctx, int dest_width)
         : source_(source), filter_(ctx.filter), taps_(ctx.taps),
-          cache_(source, ctx.taps, source.image != nullptr && source.scale != 1 ? dest_width : 0) {}
+          cache_(source, ctx.taps, source.image != nullptr && !Direct(source) ? dest_width : 0) {}
+
+    static bool Direct(const GlowSource& source) { return source.scale_x == 1 && source.scale_y == 1; }
 
     void BeginRow(int y) {
         active_ = source_.image != nullptr && y >= source_.y_begin && y < source_.y_end;
         if (!active_) return;
-        if (source_.scale == 1) {
+        if (Direct(source_)) {
             direct_ = source_.image->Row(y - source_.grid_start.y);
             return;
         }
-        const float inv_scale = 1.0f / static_cast<float>(source_.scale);
-        row_taps_ = MakeTaps((static_cast<float>(y - source_.grid_start.y) + 0.5f) * inv_scale - 0.5f,
-                             source_.image->height, filter_);
+        row_taps_ = MakeScaledTaps(y - source_.grid_start.y, source_.scale_y, source_.image->height, filter_);
         for (int j = 0; j < taps_; ++j) filtered_[j] = cache_.Row(row_taps_.index[j]);
     }
 
     void Accumulate(int x, PixelF& acc) const {
         if (!active_ || x < source_.x_begin || x >= source_.x_end) return;
-        if (source_.scale == 1) {
+        if (Direct(source_)) {
             const PixelF& p = direct_[x - source_.grid_start.x];
             acc.a += p.a;
             acc.r += p.r;
@@ -804,12 +821,6 @@ const TransferFunction& SelectTransfer(WorkingSpace space, PixelDepth depth) {
     }
 }
 
-int LevelSize(int base, int level) {
-    int size = base;
-    for (int i = 0; i < level; ++i) size = (size + 1) / 2;
-    return size < 1 ? 1 : size;
-}
-
 }  // namespace
 
 float RadiusToSigma(float radius) {
@@ -834,11 +845,26 @@ GlowPlan ShapeCore(GlowPlan plan, const GlowSettings& settings) {
     const float resolution = settings.resolution > 0.0f ? settings.resolution : 1.0f;
     const float band = RadiusToSigma(kDefaultCoreRadius * resolution);
     const float core = std::max(RadiusToSigma(std::max(settings.core_radius, 0.0f)), 1.0e-3f);
-    if (gain == 1.0f && std::fabs(settings.core_radius / resolution - kDefaultCoreRadius) < 1.0e-3f) return plan;
+    const float softness = std::clamp(settings.core_softness, 0.0f, 1.0f);
+    if (gain == 1.0f && softness == 0.0f &&
+        std::fabs(settings.core_radius / resolution - kDefaultCoreRadius) < 1.0e-3f) {
+        return plan;
+    }
 
     auto share = [](float sigma, float size) {
         const float s = sigma / size;
         return std::exp(-0.5f * std::min(s * s, 80.0f));
+    };
+    // Core Softness loosens the placement both ways: the cut-off past the core
+    // radius flattens from a Gaussian towards an exponential tail, and the
+    // finest rungs, which draw the hard line along the source's edge, give
+    // some of their share to the rungs around the radius. The light moved is
+    // the same; it just arrives as a gentler slope.
+    const float tail = 2.0f - 1.4f * softness;
+    auto placement = [&](float sigma, float size) {
+        const float s = sigma / size;
+        const float cut = std::exp(-0.5f * std::min(std::pow(s, tail), 80.0f));
+        return s < 1.0f ? cut * std::pow(s, softness) : cut;
     };
     const int count = plan.level_count;
     float natural[kMaxPyramidLevels] = {};
@@ -846,7 +872,7 @@ GlowPlan ShapeCore(GlowPlan plan, const GlowSettings& settings) {
     for (int i = 0; i < count; ++i) {
         const float sigma = plan.effective_sigma[i] * static_cast<float>(plan.base_scale);
         natural[i] = share(sigma, band);
-        placed[i] = share(sigma, core);
+        placed[i] = placement(sigma, core);
     }
     // If the core is finer than every rung, it lands on the finest.
     float placed_any = 0.0f;
@@ -943,30 +969,72 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
 
     const TransferFunction& transfer = SelectTransfer(settings.working_space, render.dest.depth);
 
+    // How much of the plan's size each axis gets: the radii can differ (pixel
+    // aspect, per-axis downsampling) and Aspect Ratio squeezes one axis.
     const float sigma_x = RadiusToSigma(settings.radius_x);
     const float sigma_y = RadiusToSigma(settings.radius_y);
     const float sigma = std::max(sigma_x, sigma_y);
+    const float aspect = std::max(0.0f, settings.aspect_ratio);
+    const float factor_x = (sigma > 0.0f ? sigma_x / sigma : 1.0f) * std::min(1.0f, aspect);
+    const float factor_y = (sigma > 0.0f ? sigma_y / sigma : 1.0f) * (aspect > 1.0f ? 1.0f / aspect : 1.0f);
 
     const GlowPlan plan = PlanForRender(settings, render);
     const int scale = plan.base_scale;
     const int count = plan.level_count;
     const int split = std::clamp(plan.split_level, 0, count - 1);
+
+    // Each axis is decimated on its own schedule: it halves going into a level
+    // only once its blur there, at the coarser pixel, is still a full level
+    // blur. A round glow halves both every level, as it always has; a squeezed
+    // axis stays finer for longer, so a glow can be far wider than it is tall
+    // without its narrow axis being smeared by the resampling.
+    struct AxisPlan {
+        bool halve[kMaxPyramidLevels] = {};
+        int step[kMaxPyramidLevels] = {};  // level pixel, in render pixels
+        float sigma[kMaxPyramidLevels] = {};  // blur within the level, in its pixels
+    };
+    auto plan_axis = [&](float factor) {
+        AxisPlan axis;
+        for (int i = 0; i < count; ++i) {
+            // The blur the round glow adds at this level, in render pixels.
+            const float wanted = factor * plan.level_sigma * static_cast<float>(scale << i);
+            int step = i == 0 ? scale : axis.step[i - 1];
+            if (i > 0 && (factor >= 1.0f || wanted >= 0.99f * plan.level_sigma * static_cast<float>(2 * step))) {
+                axis.halve[i] = true;
+                step *= 2;
+            }
+            axis.step[i] = step;
+            axis.sigma[i] = factor >= 1.0f ? plan.level_sigma : wanted / static_cast<float>(step);
+        }
+        return axis;
+    };
+    const AxisPlan axis_x = plan_axis(factor_x);
+    const AxisPlan axis_y = plan_axis(factor_y);
+
     // One pixel of the halo tier's first level, in render pixels. Both tiers
     // are anchored to multiples of it, so the downsample from one into the
     // other lands on whole pixels.
-    const int halo_step = scale << split;
+    const int halo_step_x = axis_x.step[split];
+    const int halo_step_y = axis_y.step[split];
 
     // In source coordinates, so the grid is anchored to the layer's pixels: it
     // must not move when the radius animates the bounds, nor when the host asks
     // for a different rectangle.
-    const int reach = static_cast<int>(std::ceil(plan.Reach()));
-    const int low_x = std::min(-reach, render.source_offset_x);
-    const int low_y = std::min(-reach, render.source_offset_y);
-    const int high_x = std::max(render.source.width + reach, render.source_offset_x + render.dest.width);
-    const int high_y = std::max(render.source.height + reach, render.source_offset_y + render.dest.height);
-    const PixelPoint halo_origin{FloorToMultiple(low_x, halo_step), FloorToMultiple(low_y, halo_step)};
-    const int halo_width = CeilDiv(high_x - halo_origin.x, halo_step);
-    const int halo_height = CeilDiv(high_y - halo_origin.y, halo_step);
+    const float plan_reach = plan.Reach();
+    auto axis_reach = [&](float factor) {
+        const int full = static_cast<int>(std::ceil(plan_reach));
+        if (factor >= 1.0f) return full;
+        return std::min(full, static_cast<int>(std::ceil(plan_reach * factor)) + 2 * scale);
+    };
+    const int reach_x = axis_reach(factor_x);
+    const int reach_y = axis_reach(factor_y);
+    const int low_x = std::min(-reach_x, render.source_offset_x);
+    const int low_y = std::min(-reach_y, render.source_offset_y);
+    const int high_x = std::max(render.source.width + reach_x, render.source_offset_x + render.dest.width);
+    const int high_y = std::max(render.source.height + reach_y, render.source_offset_y + render.dest.height);
+    const PixelPoint halo_origin{FloorToMultiple(low_x, halo_step_x), FloorToMultiple(low_y, halo_step_y)};
+    const int halo_width = CeilDiv(high_x - halo_origin.x, halo_step_x);
+    const int halo_height = CeilDiv(high_y - halo_origin.y, halo_step_y);
 
     // With one tier level 0 spans the whole reach. With two it covers the layer
     // and what the core tier's blurs spill past it, rounded out to whole halo
@@ -975,11 +1043,16 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
     int level0_width = halo_width;
     int level0_height = halo_height;
     if (split > 0) {
-        const int margin = static_cast<int>(std::ceil(4.0f * plan.effective_sigma[split - 1] *
-                                                      static_cast<float>(scale))) + 2 * scale;
-        core_origin = PixelPoint{FloorToMultiple(-margin, halo_step), FloorToMultiple(-margin, halo_step)};
-        level0_width = CeilDiv(render.source.width + margin - core_origin.x, halo_step) << split;
-        level0_height = CeilDiv(render.source.height + margin - core_origin.y, halo_step) << split;
+        auto margin_for = [&](float factor) {
+            const float spill = 4.0f * plan.effective_sigma[split - 1] * static_cast<float>(scale) *
+                                std::min(1.0f, factor);
+            return static_cast<int>(std::ceil(spill)) + 2 * scale;
+        };
+        const int margin_x = margin_for(factor_x);
+        const int margin_y = margin_for(factor_y);
+        core_origin = PixelPoint{FloorToMultiple(-margin_x, halo_step_x), FloorToMultiple(-margin_y, halo_step_y)};
+        level0_width = CeilDiv(render.source.width + margin_x - core_origin.x, halo_step_x) * (halo_step_x / scale);
+        level0_height = CeilDiv(render.source.height + margin_y - core_origin.y, halo_step_y) * (halo_step_y / scale);
     }
 
     // The rest of the pipeline works in destination pixels.
@@ -989,12 +1062,23 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
     OwnedImageF levels[kMaxPyramidLevels];
     int temp_width = 1;
     int temp_height = 1;
-    for (int i = 0; i < count; ++i) {
-        const int w = i < split ? LevelSize(level0_width, i) : LevelSize(halo_width, i - split);
-        const int h = i < split ? LevelSize(level0_height, i) : LevelSize(halo_height, i - split);
-        if (!levels[i].Allocate(allocator, w, h)) return GlowResult::kOutOfMemory;
-        temp_width = std::max(temp_width, w);
-        temp_height = std::max(temp_height, h);
+    {
+        int w = level0_width;
+        int h = level0_height;
+        for (int i = 0; i < count; ++i) {
+            if (i == split && split > 0) {
+                w = halo_width;
+                h = halo_height;
+            } else if (i > 0) {
+                if (axis_x.halve[i]) w = (w + 1) / 2;
+                if (axis_y.halve[i]) h = (h + 1) / 2;
+            }
+            w = std::max(w, 1);
+            h = std::max(h, 1);
+            if (!levels[i].Allocate(allocator, w, h)) return GlowResult::kOutOfMemory;
+            temp_width = std::max(temp_width, w);
+            temp_height = std::max(temp_height, h);
+        }
     }
     OwnedImageF temp;
     if (!temp.Allocate(allocator, temp_width, temp_height)) return GlowResult::kOutOfMemory;
@@ -1018,19 +1102,28 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
                           threshold, transfer, level0, runner);
     }
 
-    // Blur each octave, then feed the next one from it.
-    const float sigma_ratio_x = sigma > 0.0f ? sigma_x / sigma : 1.0f;
-    const float sigma_ratio_y = sigma > 0.0f ? sigma_y / sigma : 1.0f;
-    const BlurKernel kernel_x = BlurKernel::Gaussian(plan.level_sigma * sigma_ratio_x);
-    const BlurKernel kernel_y = BlurKernel::Gaussian(plan.level_sigma * sigma_ratio_y);
+    // Blur each octave, then feed the next one from it. Where both axes halve
+    // together the classic half-size filters run, so a round glow is exactly
+    // what it was.
     for (int i = 0; i < count; ++i) {
+        const BlurKernel kernel_x = BlurKernel::Gaussian(axis_x.sigma[i]);
+        const BlurKernel kernel_y = BlurKernel::Gaussian(axis_y.sigma[i]);
         BlurSeparable(levels[i].View(), temp.View(), kernel_x, kernel_y, runner);
         if (i + 1 >= count) continue;
+        const bool hx = axis_x.halve[i + 1];
+        const bool hy = axis_y.halve[i + 1];
         if (i + 1 == split) {
-            DownsampleHalfInto(levels[i].View(), levels[i + 1].View(), (core_origin.x - halo_origin.x) / halo_step,
-                               (core_origin.y - halo_origin.y) / halo_step, runner);
-        } else {
+            const int offset_x = (core_origin.x - halo_origin.x) / halo_step_x;
+            const int offset_y = (core_origin.y - halo_origin.y) / halo_step_y;
+            if (hx && hy) {
+                DownsampleHalfInto(levels[i].View(), levels[i + 1].View(), offset_x, offset_y, runner);
+            } else {
+                DownsampleAxes(levels[i].View(), levels[i + 1].View(), hx, hy, offset_x, offset_y, true, runner);
+            }
+        } else if (hx && hy) {
             DownsampleHalf(levels[i].View(), levels[i + 1].View(), runner);
+        } else {
+            DownsampleAxes(levels[i].View(), levels[i + 1].View(), hx, hy, 0, 0, false, runner);
         }
     }
 
@@ -1039,7 +1132,14 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
     auto collapse = [&](int first, int last) {
         ScaleInPlace(levels[last].View(), plan.channel_weights[last], runner);
         for (int i = last - 1; i >= first; --i) {
-            UpsampleHalfAccumulate(levels[i + 1].View(), levels[i].View(), plan.channel_weights[i], runner);
+            const bool hx = axis_x.halve[i + 1];
+            const bool hy = axis_y.halve[i + 1];
+            if (hx && hy) {
+                UpsampleHalfAccumulate(levels[i + 1].View(), levels[i].View(), plan.channel_weights[i], runner);
+            } else {
+                UpsampleAxesAccumulate(levels[i + 1].View(), levels[i].View(), hx, hy, plan.channel_weights[i],
+                                       runner);
+            }
         }
     };
     collapse(split, count - 1);
@@ -1078,28 +1178,29 @@ GlowResult RenderGlow(const GlowSettings& settings, const GlowRender& render, Al
 
     const int dest_width = render.dest.width;
     const int dest_height = render.dest.height;
-    auto describe = [&](GlowSource& out, const ImageF& image, int step, const PixelPoint& start, bool whole,
-                        std::vector<AxisTaps>& columns) {
+    auto describe = [&](GlowSource& out, const ImageF& image, int step_x, int step_y, const PixelPoint& start,
+                        bool whole, std::vector<AxisTaps>& columns) {
         out.image = &image;
-        out.scale = step;
+        out.scale_x = step_x;
+        out.scale_y = step_y;
         out.grid_start = start;
         out.x_begin = whole ? 0 : std::clamp(start.x, 0, dest_width);
-        out.x_end = whole ? dest_width : std::clamp(start.x + image.width * step, 0, dest_width);
+        out.x_end = whole ? dest_width : std::clamp(start.x + image.width * step_x, 0, dest_width);
         out.y_begin = whole ? 0 : std::clamp(start.y, 0, dest_height);
-        out.y_end = whole ? dest_height : std::clamp(start.y + image.height * step, 0, dest_height);
-        if (step == 1) return;
-        const float inv_step = 1.0f / static_cast<float>(step);
+        out.y_end = whole ? dest_height : std::clamp(start.y + image.height * step_y, 0, dest_height);
+        if (step_x == 1 && step_y == 1) return;
         columns.resize(static_cast<std::size_t>(dest_width));
         for (int x = 0; x < dest_width; ++x) {
-            columns[static_cast<std::size_t>(x)] = MakeTaps(
-                (static_cast<float>(x - start.x) + 0.5f) * inv_step - 0.5f, image.width, ctx.filter);
+            columns[static_cast<std::size_t>(x)] = MakeScaledTaps(x - start.x, step_x, image.width, ctx.filter);
         }
         out.columns = columns.data();
     };
     std::vector<AxisTaps> core_columns;
     std::vector<AxisTaps> halo_columns;
-    describe(ctx.core, level0, scale, grid_start, split == 0, core_columns);
-    if (split > 0) describe(ctx.halo, levels[split].View(), halo_step, halo_start, true, halo_columns);
+    describe(ctx.core, level0, scale, scale, grid_start, split == 0, core_columns);
+    if (split > 0) {
+        describe(ctx.halo, levels[split].View(), halo_step_x, halo_step_y, halo_start, true, halo_columns);
+    }
 
     Composite(render.source, render.source_offset_x, render.source_offset_y, ctx, render.dest, runner);
     return GlowResult::kOk;

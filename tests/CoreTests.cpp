@@ -508,7 +508,7 @@ void TestDitherIsQuietAndStill() {
 // same pixels either way. Sizing the pyramid to the request instead of to the
 // glow discarded source pixels outside the window and made the blur clamp
 // against its edge, which changed the glow with the viewer.
-void TestRegionOfInterestMatchesFullFrame(GlowModel model) {
+void TestRegionOfInterestMatchesFullFrame(GlowModel model, float aspect = 1.0f) {
     MallocAllocator allocator;
     ThreadPoolRunner runner(4);
 
@@ -519,6 +519,7 @@ void TestRegionOfInterestMatchesFullFrame(GlowModel model) {
     settings.threshold = 0.5f;
     settings.composite = CompositeMode::kGlowOnly;
     settings.radius_x = settings.radius_y = 300.0f;
+    settings.aspect_ratio = aspect;
     if (model == GlowModel::kInverseSquare) {
         // Far enough, on a small enough budget, that the pyramid splits into a
         // core tier over the layer and a halo tier over the reach.
@@ -1235,7 +1236,10 @@ void TestAnisotropicRadius() {
     Check(vertical > 0.0f, "the glow has a measurable height");
     Check(horizontal / vertical > 1.8f, "an anisotropic radius stretches the glow");
     // Tighten this once each axis is decimated on its own schedule.
-    Check(horizontal / vertical < 2.6f, "the shortfall against the requested 4:1 is unchanged");
+    // Each axis is decimated on its own schedule, so the narrow one is not
+    // smeared by resampling sized for the wide one. The 6 px disc itself
+    // pads both extents, so the measured ratio sits a little under 4.
+    Check(horizontal / vertical > 3.2f && horizontal / vertical < 4.8f, "the glow keeps the requested 4:1");
 }
 
 void TestThresholdAndPassThrough() {
@@ -2172,6 +2176,106 @@ void TestCoreIsSetApartFromTheHalo() {
     }
 }
 
+
+void TestCoreSoftness() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 900;
+    const int height = 600;
+    TestImage source(width, height, PixelDepth::kFloat32);
+    for (int y = 250; y < 350; ++y) {
+        for (int x = 400; x < 500; ++x) source.SetPixel(x, y, PixelF{1.0f, 1.0f, 0.3f, 1.0f});
+    }
+    auto render_with = [&](float softness) {
+        GlowSettings settings = DefaultSettings();
+        settings.model = GlowModel::kInverseSquare;
+        settings.falloff = 2.0f;
+        settings.threshold = 0.0f;
+        settings.radius_x = settings.radius_y = 400.0f;
+        settings.composite = CompositeMode::kGlowOnly;
+        settings.core_intensity = 3.0f;
+        settings.core_radius = 30.0f;
+        settings.core_softness = softness;
+        TestImage dest(width, height, PixelDepth::kFloat32);
+        GlowRender render;
+        render.source = source.View();
+        render.dest = dest.View();
+        Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk, "softness render succeeds");
+        return dest;
+    };
+    const TestImage hard = render_with(0.0f);
+    const TestImage soft = render_with(1.0f);
+    // Measured: 6 px out 0.036 -> 0.077, 100 px out 0.0083 -> 0.0141, the
+    // total unchanged. The light comes off the shape's own face, which is
+    // what the hard line along the edge was made of.
+    Check(soft.GetPixel(440, 300).g < hard.GetPixel(440, 300).g, "a soft core takes light off the shape's face");
+    Check(soft.GetPixel(540, 300).g > hard.GetPixel(540, 300).g * 1.5f, "a soft core trails further out");
+    Check(soft.GetPixel(600, 300).g > hard.GetPixel(600, 300).g * 1.3f, "a soft core fades into the halo");
+    Check(TotalEnergy(soft) > TotalEnergy(hard) * 0.98f && TotalEnergy(soft) < TotalEnergy(hard) * 1.02f,
+          "softening the core does not change how much light it carries");
+}
+
+void TestAspectRatio() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 900;
+    const int height = 900;
+    TestImage source(width, height, PixelDepth::kFloat32);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const bool inside = std::hypot(x - 450.0, y - 450.0) < 5.0;
+            source.SetPixel(x, y, inside ? PixelF{1.0f, 3.0f, 3.0f, 3.0f} : PixelF{0.0f, 0.0f, 0.0f, 0.0f});
+        }
+    }
+    for (GlowModel model : {GlowModel::kClassic, GlowModel::kInverseSquare}) {
+        for (Quality quality : {Quality::kDraft, Quality::kBest}) {
+            auto render_with = [&](float aspect) {
+                GlowSettings settings = DefaultSettings();
+                settings.model = model;
+                settings.quality = quality;
+                settings.threshold = 0.2f;
+                settings.radius_x = settings.radius_y = 300.0f;
+                settings.aspect_ratio = aspect;
+                settings.composite = CompositeMode::kGlowOnly;
+                TestImage dest(width, height, PixelDepth::kFloat32);
+                GlowRender render;
+                render.source = source.View();
+                render.dest = dest.View();
+                Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk,
+                      "aspect render succeeds");
+                return dest;
+            };
+            auto extent = [&](const TestImage& image, int dx, int dy) {
+                const float peak = image.GetPixel(450, 450).g;
+                for (int i = 1; i < 450; ++i) {
+                    if (image.GetPixel(450 + dx * i, 450 + dy * i).g < peak * 0.01f) return i;
+                }
+                return 450;
+            };
+            const TestImage round = render_with(1.0f);
+            const TestImage wide = render_with(2.0f);
+            const TestImage tall = render_with(0.5f);
+            const TestImage streak = render_with(0.0f);
+            const std::string where = std::string(ModelName(model)) +
+                                      (quality == Quality::kDraft ? " (draft)" : " (best)");
+            CheckNear(static_cast<float>(extent(round, 1, 0)), static_cast<float>(extent(round, 0, 1)), 1.0f,
+                      "aspect 1 is round" + where);
+            const float wide_ratio = static_cast<float>(extent(wide, 1, 0)) / static_cast<float>(extent(wide, 0, 1));
+            const float tall_ratio = static_cast<float>(extent(tall, 0, 1)) / static_cast<float>(extent(tall, 1, 0));
+            Check(wide_ratio > 1.8f && wide_ratio < 2.2f, "aspect 2 is twice as wide as tall" + where);
+            Check(tall_ratio > 1.8f && tall_ratio < 2.2f, "aspect 0.5 is twice as tall as wide" + where);
+            Check(extent(streak, 1, 0) <= 9, "aspect 0 does not spread sideways" + where);
+            Check(extent(streak, 0, 1) >= extent(round, 0, 1), "aspect 0 is a vertical streak" + where);
+            Check(TotalEnergy(wide) > TotalEnergy(round) * 0.98f && TotalEnergy(wide) < TotalEnergy(round) * 1.03f &&
+                      TotalEnergy(streak) > TotalEnergy(round) * 0.98f &&
+                      TotalEnergy(streak) < TotalEnergy(round) * 1.03f,
+                  "squeezing the glow does not change how much light it carries" + where);
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -2187,6 +2291,10 @@ int main() {
         TestBrightnessIsResolutionIndependent(model, AlphaMode::kPremultiplied);
         TestBrightnessIsResolutionIndependent(model, AlphaMode::kStraight);
         TestRegionOfInterestMatchesFullFrame(model);
+        // A squeezed axis keeps its own grid, which must be anchored as
+        // firmly as the round one.
+        TestRegionOfInterestMatchesFullFrame(model, 0.4f);
+        TestRegionOfInterestMatchesFullFrame(model, 2.5f);
         TestGlowTracksSubPixelMotion(model);
     }
     TestDitherIsQuietAndStill();
@@ -2202,6 +2310,8 @@ int main() {
     TestUnmultReadsCoverageFromBrightness();
     TestSaturationBiasFavoursColour();
     TestAnisotropicRadius();
+    TestAspectRatio();
+    TestCoreSoftness();
     TestThresholdAndPassThrough();
     TestTransparentInput();
     TestHdrNotClamped();

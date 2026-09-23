@@ -366,7 +366,9 @@ enum {
     kIndexGlowModel = 31,
     kIndexCoreRadius = 33,
     kIndexCoreIntensity = 34,
-    kParamCountAsShipped = 36
+    kIndexCoreSoftness = 37,
+    kIndexAspectRatio = 38,
+    kParamCountAsShipped = 40
 };
 
 bool RunRender(EffectMainFn effect_main, const RenderOptions& options, const std::string& out_dir) {
@@ -406,6 +408,8 @@ bool RunRender(EffectMainFn effect_main, const RenderOptions& options, const std
     SetPopupParam(&host, kIndexGlowModel - 1, options.model);
     SetFloatParam(&host, kIndexCoreRadius - 1, 20.0f);
     SetFloatParam(&host, kIndexCoreIntensity - 1, options.advanced ? 40.0f : 100.0f);
+    SetFloatParam(&host, kIndexCoreSoftness - 1, options.advanced ? 50.0f : 0.0f);
+    SetFloatParam(&host, kIndexAspectRatio - 1, options.advanced ? 1.6f : 1.0f);
     if (options.advanced) {
         SetFloatParam(&host, kIndexSaturationBias - 1, 60.0f);
         SetFloatParam(&host, kIndexSourceOpacity - 1, 70.0f);

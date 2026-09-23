@@ -55,6 +55,13 @@ struct GlowSettings {
     // is exactly what it was before these controls existed.
     float core_radius = 20.0f;  // render pixels, like the radius
     float core_intensity = 1.0f;
+    // How far past a hard Gaussian edge the core fades: 0 keeps the core's
+    // shape as it was, 1 lets it trail off into the halo.
+    float core_softness = 0.0f;
+    // Width over height of the glow: 1 is round, above 1 stretches it
+    // sideways, below 1 upright, 0 is a vertical streak. The longer axis keeps
+    // the radius.
+    float aspect_ratio = 1.0f;
 };
 
 // Geometry of one render. The glow is generated over the destination rect, so
