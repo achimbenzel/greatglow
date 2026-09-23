@@ -49,6 +49,12 @@ struct GlowSettings {
     // fixed size in the composition, so it has to follow the render resolution
     // the way the radius does.
     float resolution = 1.0f;
+    // The core: the tight, soft rim of light hugging the source, made by the
+    // finest octaves. Core Intensity scales the octaves up to about Core
+    // Radius without touching the halo that Radius sets; at 1 the glow is
+    // exactly what it was before these controls existed.
+    float core_radius = 20.0f;  // render pixels, like the radius
+    float core_intensity = 1.0f;
 };
 
 // Geometry of one render. The glow is generated over the destination rect, so

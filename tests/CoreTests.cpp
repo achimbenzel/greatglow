@@ -2094,6 +2094,65 @@ void TestFaintLayerDoesNotGlow() {
     Check(brightest < 2.0f / 255.0f, "a near-invisible layer does not glow");
 }
 
+// Core Radius and Core Intensity set the soft rim hugging the source apart
+// from the halo Radius sets. At 100% nothing changes - a project saved before
+// the controls existed must open looking the same - and turning the core down
+// takes the rim away without touching the halo far out.
+void TestCoreIsSetApartFromTheHalo() {
+    MallocAllocator allocator;
+    ThreadPoolRunner runner(4);
+
+    const int width = 900;
+    const int height = 600;
+    TestImage source(width, height, PixelDepth::kFloat32);
+    for (int y = 250; y < 350; ++y) {
+        for (int x = 400; x < 500; ++x) source.SetPixel(x, y, PixelF{1.0f, 1.0f, 0.3f, 1.0f});
+    }
+    for (GlowModel model : {GlowModel::kClassic, GlowModel::kInverseSquare}) {
+        auto render_with = [&](float intensity, bool touch) {
+            GlowSettings settings = DefaultSettings();
+            settings.model = model;
+            settings.falloff = 2.0f;
+            settings.threshold = 0.0f;
+            settings.radius_x = settings.radius_y = 400.0f;
+            settings.composite = CompositeMode::kGlowOnly;
+            if (touch) {
+                settings.core_radius = 20.0f;
+                settings.core_intensity = intensity;
+            }
+            TestImage dest(width, height, PixelDepth::kFloat32);
+            GlowRender render;
+            render.source = source.View();
+            render.dest = dest.View();
+            Check(abglow::RenderGlow(settings, render, allocator, runner) == GlowResult::kOk, "core render succeeds");
+            return dest;
+        };
+        const TestImage untouched = render_with(1.0f, false);
+        const TestImage unity = render_with(1.0f, true);
+        const TestImage none = render_with(0.0f, true);
+        const TestImage hot = render_with(3.0f, true);
+
+        bool identical = true;
+        for (int y = 0; y < height; y += 7) {
+            for (int x = 0; x < width; x += 7) {
+                if (untouched.GetPixel(x, y).g != unity.GetPixel(x, y).g) identical = false;
+            }
+        }
+        Check(identical, std::string("core intensity 100% leaves the glow exactly as it was") + ModelName(model));
+
+        const float rim = untouched.GetPixel(503, 300).g;
+        const float halo = untouched.GetPixel(700, 300).g;
+        // Classic's finest octave is a fraction of the radius, so at 400 it
+        // has hardly any core to turn; the rim is Inverse Square's.
+        if (model == GlowModel::kInverseSquare) {
+            Check(none.GetPixel(503, 300).g < rim * 0.8f, "turning the core down takes the rim away");
+            Check(hot.GetPixel(503, 300).g > rim * 1.2f, "turning the core up brightens the rim");
+        }
+        CheckNear(none.GetPixel(700, 300).g, halo, halo * 0.05f,
+                  std::string("the halo far out is left alone") + ModelName(model));
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -2143,6 +2202,7 @@ int main() {
     TestGlowDoesNotFlicker();
     TestNoRingsInTheHalo();
     TestFaintLayerDoesNotGlow();
+    TestCoreIsSetApartFromTheHalo();
 
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

@@ -46,13 +46,17 @@ enum ParamId {
     kIdMultiplyGreen = 28,
     kIdMultiplyBlue = 29,
     kIdAdvancedGroupEnd = 30,
-    kIdGlowModel = 31
+    kIdGlowModel = 31,
+    kIdCoreGroup = 32,
+    kIdCoreRadius = 33,
+    kIdCoreIntensity = 34,
+    kIdCoreGroupEnd = 35
 };
 
 // The layout as shipped. These numbers are in every saved project that uses the
 // effect, so a change here is a change to a file format other people's work
 // depends on. Appending is fine; anything else is not.
-static_assert(kParamCount == 32, "parameters may only be appended");
+static_assert(kParamCount == 36, "parameters may only be appended");
 static_assert(kParamExpandBounds == 17 && kParamRolloff == 18, "shipped parameter order");
 static_assert(kParamRenderGroupEnd == 19, "shipped parameter order");
 static_assert(kParamAboutGroupStart == 20 && kParamAboutGroupEnd == 21, "shipped parameter order");
@@ -65,6 +69,10 @@ static_assert(kParamUnmult == 26 && kIdUnmult == 26, "shipped parameter order an
 static_assert(kParamMultiplyBlue == 29 && kIdMultiplyBlue == 29, "shipped parameter order and id");
 static_assert(kParamAdvancedGroupEnd == 30 && kIdAdvancedGroupEnd == 30, "shipped parameter order and id");
 static_assert(kParamGlowModel == 31 && kIdGlowModel == 31, "shipped parameter order and id");
+static_assert(kParamCoreGroupStart == 32 && kIdCoreGroup == 32, "shipped parameter order and id");
+static_assert(kParamCoreRadius == 33 && kIdCoreRadius == 33, "shipped parameter order and id");
+static_assert(kParamCoreIntensity == 34 && kIdCoreIntensity == 34, "shipped parameter order and id");
+static_assert(kParamCoreGroupEnd == 35 && kIdCoreGroupEnd == 35, "shipped parameter order and id");
 
 constexpr char kQualityChoices[] = "Draft|Normal|High|Best";
 constexpr char kCompositeChoices[] = "Add|Screen|Glow Only";
@@ -259,6 +267,23 @@ PF_Err SetupParams(PF_InData* in_data, PF_OutData* out_data) {
     AEFX_CLR_STRUCT(def);
     PF_ADD_POPUPX("Glow Model", 2, 1, kGlowModelChoices, 0, kIdGlowModel);
 
+    // The soft rim of light hugging the source, set apart from the halo that
+    // Radius sets. Intensity 100% is the glow exactly as it was before this
+    // group existed, so a project saved without it opens unchanged.
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPICX("Core", 0, kIdCoreGroup);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Core Radius", 0.0f, 1000.0f, 0.0f, 200.0f, 20.0f, PF_Precision_TENTHS, 0, 0,
+                         kIdCoreRadius);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Core Intensity", 0.0f, 1000.0f, 0.0f, 300.0f, 100.0f, PF_Precision_TENTHS,
+                         PF_ValueDisplayFlag_PERCENT, 0, kIdCoreIntensity);
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kIdCoreGroupEnd);
+
     out_data->num_params = kParamCount;
     return PF_Err_NONE;
 }
@@ -281,6 +306,8 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     int working_space = 1;
     int rolloff = 1;
     int glow_model = 1;
+    float core_radius = 20.0f;
+    float core_intensity = 100.0f;
     float falloff = 2.0f;
     float saturation_bias = 0.0f;
     float source_opacity = 100.0f;
@@ -311,6 +338,8 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     if (!err) err = CheckoutFloat(in_data, kParamMultiplyGreen, &multiply_g);
     if (!err) err = CheckoutFloat(in_data, kParamMultiplyBlue, &multiply_b);
     if (!err) err = CheckoutPopup(in_data, kParamGlowModel, &glow_model);
+    if (!err) err = CheckoutFloat(in_data, kParamCoreRadius, &core_radius);
+    if (!err) err = CheckoutFloat(in_data, kParamCoreIntensity, &core_intensity);
     if (err) return err;
 
     // Slider distances are authored at full resolution; convert to the pixels
@@ -343,6 +372,8 @@ PF_Err ReadParams(PF_InData* in_data, PF_OutData* out_data, EffectParams* out_pa
     settings.working_space = static_cast<WorkingSpace>(std::clamp(working_space - 1, 0, 2));
     settings.rolloff = static_cast<HighlightRolloff>(std::clamp(rolloff - 1, 0, 2));
     settings.model = static_cast<GlowModel>(std::clamp(glow_model - 1, 0, 1));
+    settings.core_radius = std::max(0.0f, core_radius) * settings.resolution;
+    settings.core_intensity = std::max(0.0f, core_intensity) * 0.01f;
     settings.falloff = std::clamp(falloff, 1.0f, 3.0f);
     settings.aberration_r = std::clamp(multiply_r * 0.01f, 0.1f, 4.0f);
     settings.aberration_g = std::clamp(multiply_g * 0.01f, 0.1f, 4.0f);

@@ -430,6 +430,18 @@ On a 4K layer with the settings from a user report (radius 4000, intensity
 39%), the glow over the transparent area comes out within 1.3% across the four
 Quality settings and within 2.5% between Full and Third.
 
+### The core controls
+
+Core Radius and Core Intensity scale each rung by
+`1 + (intensity − 1) · exp(−(σ / σ_core)² / 2)`, applied to the plan after it
+is built, for either model. Octaves well above Core Radius are untouched, so
+the halo keeps what Radius and Falloff give it, and the reach, the pyramid and
+the bounds do not change. At 100% the factor is exactly 1: a project saved
+before the group existed gets its default and renders bit for bit as before.
+`TestCoreIsSetApartFromTheHalo` checks both, and that at 0% the rim 3 px from a
+shape drops while the halo 200 px out stays within 5%. Classic has little to
+turn at large radii, because its finest octave is a fraction of the radius.
+
 ### Energy
 
 In the Classic model every filter in the chain is normalised, so the glow

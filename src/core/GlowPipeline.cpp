@@ -816,7 +816,41 @@ float RadiusToSigma(float radius) {
     return std::max(0.0f, radius) * 0.32f;
 }
 
+namespace {
+
+// Scales the octaves finer than the core radius by Core Intensity, fading to
+// no change above it: 1 + (gain - 1) * exp(-(sigma / core)^2 / 2) per rung. The
+// reach and the pyramid are left alone, so the bounds do not move and at a
+// gain of 1 the plan is untouched - which is what lets a project saved before
+// these controls existed open looking the same.
+GlowPlan ShapeCore(GlowPlan plan, const GlowSettings& settings) {
+    const float gain = std::max(0.0f, settings.core_intensity);
+    if (gain == 1.0f) return plan;
+    const float core = RadiusToSigma(std::max(settings.core_radius, 0.0f));
+    for (int i = 0; i < plan.level_count; ++i) {
+        const float sigma = plan.effective_sigma[i] * static_cast<float>(plan.base_scale);
+        const float s = core > 0.0f ? sigma / core : 1.0e9f;
+        const float scale = 1.0f + (gain - 1.0f) * std::exp(-0.5f * std::min(s * s, 80.0f));
+        plan.weights[i] *= scale;
+        plan.channel_weights[i].a *= scale;
+        plan.channel_weights[i].r *= scale;
+        plan.channel_weights[i].g *= scale;
+        plan.channel_weights[i].b *= scale;
+    }
+    return plan;
+}
+
+GlowPlan PlanForLayerUnshaped(const GlowSettings& settings, int layer_width, int layer_height);
+
+}  // namespace
+
 GlowPlan PlanForLayer(const GlowSettings& settings, int layer_width, int layer_height) {
+    return ShapeCore(PlanForLayerUnshaped(settings, layer_width, layer_height), settings);
+}
+
+namespace {
+
+GlowPlan PlanForLayerUnshaped(const GlowSettings& settings, int layer_width, int layer_height) {
     const float sigma = std::max(RadiusToSigma(settings.radius_x), RadiusToSigma(settings.radius_y));
     if (settings.model == GlowModel::kClassic) {
         // The pyramid has to span everywhere the glow has light, not the
@@ -834,6 +868,8 @@ GlowPlan PlanForLayer(const GlowSettings& settings, int layer_width, int layer_h
                                  settings.quality, layer_width, layer_height, 1, settings.falloff,
                                  settings.aberration_r, settings.aberration_g, settings.aberration_b);
 }
+
+}  // namespace
 
 float GlowReach(const GlowSettings& settings, int layer_width, int layer_height) {
     if (settings.model == GlowModel::kClassic) {

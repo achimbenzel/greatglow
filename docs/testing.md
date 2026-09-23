@@ -98,7 +98,7 @@ off in a normal build and cost nothing there.
 ## Manual checks
 
 15. **The right build.** The parameter list ends with a group named after the
-    build (`v1.2.2 (abc1234)`). Check it matches what was just installed before
+    build (`v1.3.0 (abc1234)`). Check it matches what was just installed before
     trusting any of the above — After Effects scans both the application's
     `Plug-ins` folder and `Common\Plug-ins\7.0\MediaCore`, and a stale copy in
     the other one will be loaded instead.
