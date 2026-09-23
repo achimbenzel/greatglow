@@ -88,7 +88,7 @@ Restart After Effects; the effect appears under **Effect ▸ AB Tools ▸ Profou
 Pick **one** of those two folders. After Effects scans both, so a copy left in
 the other one can be the copy it loads, and replacing the file you were
 thinking of changes nothing. The effect's parameters end with a group named
-after the build it came from (`v1.3.0 (abc1234)`), so the loaded build can be
+after the build it came from (`v1.3.1 (abc1234)`), so the loaded build can be
 read straight off the panel. To find every copy on the machine:
 
 ```powershell
@@ -133,8 +133,8 @@ Ship release builds from Visual Studio; mingw is for verification.
 | Unmult | off | For footage delivered on black with no usable alpha. Coverage is read from the brightest channel instead of from an alpha that is 1 everywhere, so dark areas emit nothing and a dim area emits in proportion to its brightness. |
 | Multiply Red / Green / Blue | 10 – 400 % (100 %) | Per-channel radius. A lens does not focus every wavelength at the same distance, so its veiling glare is a slightly different size per channel; pulling these apart gives the glow that chromatic fringe. The channel with the larger multiplier spreads wider and therefore peaks lower. |
 | Glow Model | Inverse Square / Classic | Inverse Square: the same light in every octave from a fixed one-pixel core to the radius, so Radius is reach and the core stays hot. Classic: the energy-conserving bloom, which scales as a whole with the radius. |
-| Core Radius | 0 – 1000 px (20) | How far out the core reaches: the soft rim of light hugging the source, made by the finest octaves. |
-| Core Intensity | 0 – 1000 % (100 %) | Strength of the core, apart from the halo that Radius sets. 0 % leaves the source crisp inside a halo; above 100 % the rim runs hotter. At 100 % the glow is exactly what it was before the Core group existed, so older projects open unchanged.|
+| Core Radius | 0 – 1000 px (20) | Size of the core: the soft rim of light hugging the source, made by the finest octaves. It moves the rim's light to its own size without changing how much there is — smaller is a tight, hard rim, larger a wide, soft one — and works at any Core Intensity. |
+| Core Intensity | 0 – 1000 % (100 %) | Strength of the core, apart from the halo that Radius sets. 0 % leaves the source crisp inside a halo; above 100 % the rim runs hotter. At 20 px and 100 % the glow is exactly what it was before the Core group existed, so older projects open unchanged. |
 
 Radius is in full-resolution pixels: it is scaled automatically for draft
 resolutions and for non-square pixels, so a glow stays round and the same size

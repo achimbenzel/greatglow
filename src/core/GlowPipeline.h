@@ -49,10 +49,10 @@ struct GlowSettings {
     // fixed size in the composition, so it has to follow the render resolution
     // the way the radius does.
     float resolution = 1.0f;
-    // The core: the tight, soft rim of light hugging the source, made by the
-    // finest octaves. Core Intensity scales the octaves up to about Core
-    // Radius without touching the halo that Radius sets; at 1 the glow is
-    // exactly what it was before these controls existed.
+    // The core: the soft rim of light hugging the source, made by the finest
+    // octaves. Core Radius moves that light to its own size, Core Intensity
+    // scales it; the halo stays where Radius puts it. At the defaults the glow
+    // is exactly what it was before these controls existed.
     float core_radius = 20.0f;  // render pixels, like the radius
     float core_intensity = 1.0f;
 };
@@ -67,6 +67,10 @@ struct GlowRender {
 };
 
 enum class GlowResult { kOk, kInvalidArguments, kOutOfMemory };
+
+// The Core Radius at which the core sits where the plan put it, in
+// full-resolution pixels.
+constexpr float kDefaultCoreRadius = 20.0f;
 
 // Converts the UI radius (0-1000) into a Gaussian sigma in pixels.
 float RadiusToSigma(float radius);

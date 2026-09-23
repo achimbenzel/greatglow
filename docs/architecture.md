@@ -432,15 +432,24 @@ Quality settings and within 2.5% between Full and Third.
 
 ### The core controls
 
-Core Radius and Core Intensity scale each rung by
-`1 + (intensity − 1) · exp(−(σ / σ_core)² / 2)`, applied to the plan after it
-is built, for either model. Octaves well above Core Radius are untouched, so
-the halo keeps what Radius and Falloff give it, and the reach, the pyramid and
-the bounds do not change. At 100% the factor is exactly 1: a project saved
-before the group existed gets its default and renders bit for bit as before.
-`TestCoreIsSetApartFromTheHalo` checks both, and that at 0% the rim 3 px from a
-shape drops while the halo 200 px out stays within 5%. Classic has little to
-turn at large radii, because its finest octave is a fraction of the radius.
+The core is the light of the finest octaves, the soft rim hugging the source.
+What counts as core is fixed: each rung's share of it is
+`exp(−(σ / σ₂₀)² / 2)`, with σ₂₀ the sigma of the default Core Radius, 20 px.
+Core Radius moves that light to the rungs around its own size, in the
+proportions the plan already gives them, so the rim gets wider and softer or
+tighter and harder while carrying the same light; Core Intensity scales it.
+The rest of each rung is halo and stays where Radius and Falloff put it, and
+the reach, the pyramid and the bounds do not change. At 20 px and 100% the plan
+is returned untouched, so a project saved before the group existed renders
+bit for bit as before.
+
+The first version only scaled the octaves below Core Radius by Core
+Intensity, which left Core Radius doing nothing at 100% — the one setting that
+mattered. `TestCoreIsSetApartFromTheHalo` now checks the identity at the
+defaults, the rim 6 px from a shape going from 0.179 to 0.222 at 80 px and
+0.153 at 5 px at 100%, the total light staying within 2%, and the halo 200 px
+out staying within 5% when the core is turned off. Classic has little to move
+at large radii, because its finest octave is a fraction of the radius.
 
 ### Energy
 

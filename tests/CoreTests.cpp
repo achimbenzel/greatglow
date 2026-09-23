@@ -2109,7 +2109,7 @@ void TestCoreIsSetApartFromTheHalo() {
         for (int x = 400; x < 500; ++x) source.SetPixel(x, y, PixelF{1.0f, 1.0f, 0.3f, 1.0f});
     }
     for (GlowModel model : {GlowModel::kClassic, GlowModel::kInverseSquare}) {
-        auto render_with = [&](float intensity, bool touch) {
+        auto render_with = [&](float intensity, bool touch, float core_radius = 20.0f) {
             GlowSettings settings = DefaultSettings();
             settings.model = model;
             settings.falloff = 2.0f;
@@ -2117,7 +2117,7 @@ void TestCoreIsSetApartFromTheHalo() {
             settings.radius_x = settings.radius_y = 400.0f;
             settings.composite = CompositeMode::kGlowOnly;
             if (touch) {
-                settings.core_radius = 20.0f;
+                settings.core_radius = core_radius;
                 settings.core_intensity = intensity;
             }
             TestImage dest(width, height, PixelDepth::kFloat32);
@@ -2150,6 +2150,25 @@ void TestCoreIsSetApartFromTheHalo() {
         }
         CheckNear(none.GetPixel(700, 300).g, halo, halo * 0.05f,
                   std::string("the halo far out is left alone") + ModelName(model));
+
+        // Core Radius moves the rim's light at any intensity, 100% included:
+        // wider pulls it off the edge and out, tighter pulls it in, and the
+        // total stays the same.
+        if (model == GlowModel::kInverseSquare) {
+            const TestImage wide = render_with(1.0f, true, 80.0f);
+            const TestImage tight = render_with(1.0f, true, 5.0f);
+            // Measured 6 px out: 0.179 at 20 px, 0.222 at 80, 0.153 at 5 -
+            // a tight core keeps its light on the shape itself.
+            Check(wide.GetPixel(505, 300).g > untouched.GetPixel(505, 300).g * 1.15f,
+                  "a wider core radius makes a wider rim");
+            Check(tight.GetPixel(505, 300).g < untouched.GetPixel(505, 300).g * 0.9f,
+                  "a tighter core radius makes a tighter rim");
+            Check(wide.GetPixel(540, 300).g > untouched.GetPixel(540, 300).g * 1.05f,
+                  "a wider core radius carries the rim further out");
+            Check(TotalEnergy(wide) > TotalEnergy(untouched) * 0.98f &&
+                      TotalEnergy(wide) < TotalEnergy(untouched) * 1.02f,
+                  "moving the core does not change how much light it carries");
+        }
     }
 }
 

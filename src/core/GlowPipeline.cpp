@@ -818,25 +818,64 @@ float RadiusToSigma(float radius) {
 
 namespace {
 
-// Scales the octaves finer than the core radius by Core Intensity, fading to
-// no change above it: 1 + (gain - 1) * exp(-(sigma / core)^2 / 2) per rung. The
-// reach and the pyramid are left alone, so the bounds do not move and at a
-// gain of 1 the plan is untouched - which is what lets a project saved before
-// these controls existed open looking the same.
+// The core is the light of the finest octaves: the soft rim hugging the
+// source. What counts as core is fixed - each rung's share of it is
+// exp(-(sigma / band)^2 / 2), with the band the default Core Radius of 20
+// pixels - and the controls move it. Core Radius redistributes that light
+// over the rungs around its own size, in the proportions the plan already
+// gives them, so a larger radius makes a wider, softer rim and a smaller one
+// a tighter, harder one without changing how much light the rim carries;
+// Core Intensity scales it. The rest of each rung is halo and stays where
+// Radius and Falloff put it. At 20 px and 100% the plan is returned as it is,
+// which is what lets a project saved before these controls existed open
+// unchanged.
 GlowPlan ShapeCore(GlowPlan plan, const GlowSettings& settings) {
     const float gain = std::max(0.0f, settings.core_intensity);
-    if (gain == 1.0f) return plan;
-    const float core = RadiusToSigma(std::max(settings.core_radius, 0.0f));
-    for (int i = 0; i < plan.level_count; ++i) {
+    const float resolution = settings.resolution > 0.0f ? settings.resolution : 1.0f;
+    const float band = RadiusToSigma(kDefaultCoreRadius * resolution);
+    const float core = std::max(RadiusToSigma(std::max(settings.core_radius, 0.0f)), 1.0e-3f);
+    if (gain == 1.0f && std::fabs(settings.core_radius / resolution - kDefaultCoreRadius) < 1.0e-3f) return plan;
+
+    auto share = [](float sigma, float size) {
+        const float s = sigma / size;
+        return std::exp(-0.5f * std::min(s * s, 80.0f));
+    };
+    const int count = plan.level_count;
+    float natural[kMaxPyramidLevels] = {};
+    float placed[kMaxPyramidLevels] = {};
+    for (int i = 0; i < count; ++i) {
         const float sigma = plan.effective_sigma[i] * static_cast<float>(plan.base_scale);
-        const float s = core > 0.0f ? sigma / core : 1.0e9f;
-        const float scale = 1.0f + (gain - 1.0f) * std::exp(-0.5f * std::min(s * s, 80.0f));
-        plan.weights[i] *= scale;
-        plan.channel_weights[i].a *= scale;
-        plan.channel_weights[i].r *= scale;
-        plan.channel_weights[i].g *= scale;
-        plan.channel_weights[i].b *= scale;
+        natural[i] = share(sigma, band);
+        placed[i] = share(sigma, core);
     }
+    // If the core is finer than every rung, it lands on the finest.
+    float placed_any = 0.0f;
+    for (int i = 0; i < count; ++i) placed_any += placed[i];
+    if (!(placed_any > 1.0e-6f)) placed[0] = 1.0f;
+
+    auto reshape = [&](auto weight_of) {
+        float light = 0.0f;
+        float room = 0.0f;
+        for (int i = 0; i < count; ++i) {
+            light += weight_of(i) * natural[i];
+            room += weight_of(i) * placed[i];
+        }
+        // Rungs the plan gave no light still take the core by the shape alone.
+        const bool shaped = room > 1.0e-12f;
+        if (!shaped) {
+            for (int i = 0; i < count; ++i) room += placed[i];
+        }
+        for (int i = 0; i < count; ++i) {
+            const float w = weight_of(i);
+            const float moved = room > 0.0f ? gain * light * (shaped ? w : 1.0f) * placed[i] / room : 0.0f;
+            weight_of(i) = w * (1.0f - natural[i]) + moved;
+        }
+    };
+    reshape([&](int i) -> float& { return plan.weights[i]; });
+    reshape([&](int i) -> float& { return plan.channel_weights[i].a; });
+    reshape([&](int i) -> float& { return plan.channel_weights[i].r; });
+    reshape([&](int i) -> float& { return plan.channel_weights[i].g; });
+    reshape([&](int i) -> float& { return plan.channel_weights[i].b; });
     return plan;
 }
 
